@@ -1,0 +1,43 @@
+[project]
+name = "oreblocks"
+version = "0.1.0"
+description = "Synthetic 3D ore-body block models of the MineLib nature: seeded deposit archetypes, bench structure, slope precedence, UPIT economics, an exact max-closure solver, extraction states with loading faces, and MineLib .blocks/.prec/.upit read/write"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Felipe Santibanez-Leal" }]
+keywords = ["mining", "block-model", "ore-body", "ultimate-pit", "UPIT", "MineLib", "open-pit", "mine-planning", "max-closure", "synthetic-data"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = ["numpy>=1.26"]
+
+[project.urls]
+Repository = "https://github.com/fsantibanezleal/CAOS_OreBlocks"
+Changelog = "https://github.com/fsantibanezleal/CAOS_OreBlocks/blob/main/CHANGELOG.md"
+Issues = "https://github.com/fsantibanezleal/CAOS_OreBlocks/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 118
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
