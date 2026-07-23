@@ -3,6 +3,12 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/fsantibanezleal/CAOS_OreBlocks/ci.yml?branch=main&label=CI)](https://github.com/fsantibanezleal/CAOS_OreBlocks/actions)
 [![License](https://img.shields.io/github/license/fsantibanezleal/CAOS_OreBlocks)](LICENSE)
 [![Version](https://img.shields.io/github/v/tag/fsantibanezleal/CAOS_OreBlocks?label=version&sort=semver)](https://github.com/fsantibanezleal/CAOS_OreBlocks/tags)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21512088-blue)](https://doi.org/10.5281/zenodo.21512088)
+
+Software note (CC-BY-4.0): *"oreblocks: License-Free Synthetic Ore-Body Block Models with a Stamped Exact
+Ultimate-Pit Optimum"*, concept DOI [10.5281/zenodo.21512088](https://doi.org/10.5281/zenodo.21512088) (source in
+[`manuscripts/ore-body-twins/`](manuscripts/ore-body-twins/)). It gives the deposit archetypes, the exact
+max-closure ultimate-pit solver, and an independent LP cross-check to machine precision (~1e-15).
 
 **Synthetic 3-D ore-body block models of the MineLib nature** — seeded deposit archetypes with
 per-block grades, bench (level) structure, slope precedence, UPIT economics with per-block optimal

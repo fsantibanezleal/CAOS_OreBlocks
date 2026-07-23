@@ -1,0 +1,113 @@
+{
+  "cross_check": [
+    {
+      "archetype": "porphyry",
+      "n_blocks": 600,
+      "max_closure_value": 32405119.253,
+      "lp_value": 32405119.253,
+      "rel_disagreement": 5.747996588647576e-16
+    },
+    {
+      "archetype": "vein",
+      "n_blocks": 600,
+      "max_closure_value": 30391847.536,
+      "lp_value": 30391847.536,
+      "rel_disagreement": 4.903012617580512e-16
+    },
+    {
+      "archetype": "layered",
+      "n_blocks": 600,
+      "max_closure_value": 136696995.107,
+      "lp_value": 136696995.107,
+      "rel_disagreement": 1.744139137179519e-15
+    },
+    {
+      "archetype": "core_halo",
+      "n_blocks": 600,
+      "max_closure_value": 6854554.706,
+      "lp_value": 6854554.706,
+      "rel_disagreement": 1.3586915774036481e-16
+    }
+  ],
+  "archetypes": [
+    {
+      "archetype": "porphyry",
+      "n_blocks": 6912,
+      "pit_value": 471370277.41,
+      "n_in_pit": 4631,
+      "pit_fraction": 0.67,
+      "identity_gap": 5.960464477539063e-08,
+      "solve_seconds": 0.112
+    },
+    {
+      "archetype": "vein",
+      "n_blocks": 6912,
+      "pit_value": 369747145.89,
+      "n_in_pit": 4451,
+      "pit_fraction": 0.644,
+      "identity_gap": 5.960464477539063e-08,
+      "solve_seconds": 0.142
+    },
+    {
+      "archetype": "layered",
+      "n_blocks": 6912,
+      "pit_value": 1458776934.53,
+      "n_in_pit": 6912,
+      "pit_fraction": 1.0,
+      "identity_gap": 2.384185791015625e-07,
+      "solve_seconds": 0.071
+    },
+    {
+      "archetype": "core_halo",
+      "n_blocks": 6912,
+      "pit_value": 94306959.38,
+      "n_in_pit": 3780,
+      "pit_fraction": 0.547,
+      "identity_gap": 0.0,
+      "solve_seconds": 0.138
+    }
+  ],
+  "scaling": [
+    {
+      "dims": [
+        16,
+        16,
+        8
+      ],
+      "n_blocks": 2048,
+      "solve_seconds": 0.024,
+      "n_in_pit": 1346
+    },
+    {
+      "dims": [
+        24,
+        24,
+        12
+      ],
+      "n_blocks": 6912,
+      "solve_seconds": 0.115,
+      "n_in_pit": 4613
+    },
+    {
+      "dims": [
+        32,
+        32,
+        16
+      ],
+      "n_blocks": 16384,
+      "solve_seconds": 0.44,
+      "n_in_pit": 11094
+    },
+    {
+      "dims": [
+        40,
+        40,
+        20
+      ],
+      "n_blocks": 32000,
+      "solve_seconds": 0.923,
+      "n_in_pit": 22026
+    }
+  ],
+  "note": "oreblocks exact max-closure UPIT vs SciPy-HiGHS LP; stamped archetype optima; solve-time scaling"
+}
