@@ -1,15 +1,15 @@
 [project]
 name = "oreblocks"
-version = "0.1.0"
-description = "Synthetic 3D ore-body block models of the MineLib nature: seeded deposit archetypes, bench structure, slope precedence, UPIT economics, an exact max-closure solver, extraction states with loading faces, and MineLib .blocks/.prec/.upit read/write"
+version = "0.2.0"
+description = "Synthetic 3D ore-body block models of the MineLib nature and their scheduling: seeded deposit archetypes, bench structure, slope precedence, UPIT economics, an exact max-closure solver, MineLib .blocks/.prec/.upit/.cpit/.pcpsp read/write, the certified CPIT LP bound by the critical multiplier algorithm, TopoSort rounding heuristics and spatial-coherence metrics"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 authors = [{ name = "Felipe Santibanez-Leal" }]
-keywords = ["mining", "block-model", "ore-body", "ultimate-pit", "UPIT", "MineLib", "open-pit", "mine-planning", "max-closure", "synthetic-data"]
+keywords = ["mining", "block-model", "ore-body", "ultimate-pit", "UPIT", "MineLib", "open-pit", "mine-planning", "max-closure", "synthetic-data", "production-scheduling", "CPIT", "PCPSP", "optimization"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
