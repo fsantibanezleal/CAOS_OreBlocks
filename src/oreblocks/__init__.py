@@ -12,7 +12,7 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
 from .economics import Econ, block_values, cutoff_grade, is_ore

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.1] - 2026-08-07
+
+### Fixed
+- `read_blocks` called `float()` on every column after `id x y z` and therefore crashed on the
+  published `newman1.blocks`, whose first free column is a rock-type code (`FRWS`, `FROR`, `OXOR`).
+  Non-numeric tokens now become `NaN` in `free` and are kept verbatim in a new `labels` dict, so a
+  real published file reads and nothing is guessed.
+- The critical multiplier algorithm re-derived the same parametric pits once per period. The
+  break-points of the family do not depend on the period, only the target capacity does, so they are
+  now solved lazily into a shared cache and every new solve is restricted to the smallest known pit
+  that must contain it. Measured on the published `newman1.cpit`: 91 and 89 closure solves before,
+  34 and 45 after, and 5.4 s to 1.3 s. On a 6912-block twin with two resources: 347 and 337 solves
+  before, 129 and 73 after, 36 s to 11.7 s. Identical bounds and schedules.
+- The bisection now stops on the DUALITY CERTIFICATE rather than on an interval width. Strong
+  duality gives `CP(U) = min_lambda [ UPL(v - lambda a) + lambda U ]`, so the search refines until
+  the primal estimate and that dual expression agree; when they do, the two bracketing pits are
+  provably consecutive break-points. The previous heuristic stop (a midpoint reproducing a bracket
+  twice) was not a proof and could return a non-adjacent bracket, which the duality assertion then
+  correctly rejected.
+
 ## [0.2.0] - 2026-08-07
 
 The scheduling half of MineLib. The package could describe a deposit and solve its ultimate pit; it
