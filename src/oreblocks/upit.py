@@ -22,7 +22,7 @@ import numpy as np
 
 from .precedence import Precedence
 
-__all__ = ["UpitResult", "solve_upit"]
+__all__ = ["UpitResult", "solve_upit", "max_closure_within"]
 
 _EPS = 1e-7
 
@@ -132,6 +132,56 @@ class _Dinic:
                     q.append(v)
                 e = nxt[e]
         return seen
+
+
+def max_closure_within(values: np.ndarray, prec: Precedence, candidates: np.ndarray) -> np.ndarray:
+    """Maximum-value closed subset of ``candidates`` only. Returns a bool mask over all blocks.
+
+    ``candidates`` must be *closed downward through the precedence it keeps*: every predecessor of a
+    candidate is either a candidate itself or already accounted for outside this call. The nested
+    structure of parametric pits guarantees this (a pit at a larger multiplier is contained in the
+    pit at a smaller one), which is what makes the sequence of solves in the critical multiplier
+    algorithm cheap: each one runs on the shrinking difference rather than on the whole model.
+    """
+    v = np.asarray(values, dtype=np.float64)
+    n = v.shape[0]
+    cand = np.asarray(candidates, dtype=bool)
+    if cand.shape != (n,):
+        raise ValueError(f"candidates must cover {n} blocks, got {cand.shape}")
+    idx = np.nonzero(cand)[0]
+    m = idx.shape[0]
+    out = np.zeros(n, dtype=bool)
+    if m == 0:
+        return out
+    local = np.full(n, -1, dtype=np.int64)
+    local[idx] = np.arange(m)
+
+    s, t = m, m + 1
+    vsub = v[idx]
+    sum_positive = float(vsub[vsub > 0].sum())
+    if sum_positive <= 0.0:
+        return out
+    inf = sum_positive + 1.0
+
+    g = _Dinic(m + 2)
+    for j in range(m):
+        vj = vsub[j]
+        if vj > 0:
+            g.add_edge(s, j, float(vj))
+        elif vj < 0:
+            g.add_edge(j, t, float(-vj))
+    pstart, plist = prec.pstart, prec.plist
+    for j in range(m):
+        b = int(idx[j])
+        for k in range(pstart[b], pstart[b + 1]):
+            p = local[plist[k]]
+            if p >= 0:
+                g.add_edge(j, int(p), inf)
+
+    g.maxflow(s, t)
+    seen = g.reachable(s)
+    out[idx] = seen[:m]
+    return out
 
 
 def solve_upit(values: np.ndarray, prec: Precedence) -> UpitResult:
