@@ -101,22 +101,34 @@ def _data_rows(text: str) -> list[list[str]]:
 
 
 def read_blocks(path: str | Path) -> dict[str, np.ndarray]:
-    """Read a ``.blocks`` file -> {'x','y','level','free'} (free = float matrix of extra cols)."""
+    """Read a ``.blocks`` file -> {'x','y','level','free','labels'}.
+
+    ``free`` is the float matrix of the columns after ``id x y z``. Published instances are NOT all
+    numeric: ``newman1`` carries a rock-type code (``FRWS``, ``FROR``, ``OXOR``) in its first free
+    column, so a reader that calls ``float()`` on every token fails on the real file. Non-numeric
+    tokens become ``NaN`` in ``free`` and are kept verbatim in ``labels`` (a dict keyed by free-column
+    index), so nothing is lost and nothing is guessed.
+    """
     rows = _data_rows(Path(path).read_text(encoding="ascii"))
     n = len(rows)
     x = np.empty(n, dtype=np.int64)
     y = np.empty(n, dtype=np.int64)
     level = np.empty(n, dtype=np.int64)
     n_free = max(0, len(rows[0]) - 4) if rows else 0
-    free = np.empty((n, n_free), dtype=np.float64)
+    free = np.full((n, n_free), np.nan, dtype=np.float64)
+    labels: dict[int, list[str]] = {}
     for r in rows:
         b = int(r[0])
         if not (0 <= b < n):
             raise ValueError(f".blocks: id {b} out of range (n={n})")
         x[b], y[b], level[b] = int(r[1]), int(r[2]), int(r[3])
         for k in range(n_free):
-            free[b, k] = float(r[4 + k])
-    return {"x": x, "y": y, "level": level, "free": free}
+            tok = r[4 + k]
+            try:
+                free[b, k] = float(tok)
+            except ValueError:
+                labels.setdefault(k, [""] * n)[b] = tok
+    return {"x": x, "y": y, "level": level, "free": free, "labels": labels}
 
 
 def read_prec(path: str | Path, n_blocks: int) -> Precedence:
