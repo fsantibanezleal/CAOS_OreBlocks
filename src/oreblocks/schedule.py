@@ -136,11 +136,102 @@ class LpRelaxation:
         return expected_extraction_times(self.x)
 
 
-def _pit_at(
-    values: np.ndarray, prec: Precedence, coef: np.ndarray, lam: float, candidates: np.ndarray
-) -> np.ndarray:
-    """``argmax`` closure of ``values - lam * coef`` restricted to ``candidates``."""
-    return max_closure_within(values - lam * coef, prec, candidates)
+class _ParametricPits:
+    """The nested family ``x(lambda) = argmax closure of (v - lambda a)``, solved lazily and CACHED.
+
+    The break-points of the family do not depend on the period; only the target capacity ``U_t``
+    does. Solving each period from scratch therefore re-derives the same pits ``T`` times, which is
+    the single largest cost in the whole algorithm. This cache is shared across periods, and because
+    the pits nest (a larger multiplier prices more blocks negative, so the pit can only shrink) every
+    new solve is restricted to the smallest already-known pit that must contain it.
+
+    Entries are kept sorted by ``lambda`` ascending, so capacity is non-increasing down the list.
+    """
+
+    def __init__(self, values: np.ndarray, coef: np.ndarray, prec: Precedence, full: np.ndarray) -> None:
+        self.v = values
+        self.a = coef
+        self.prec = prec
+        self.lams: list[float] = [0.0]
+        self.pits: list[np.ndarray] = [full.copy()]
+        self.caps: list[float] = [float(coef[full].sum())]
+        self.vals: list[float] = [float(values[full].sum())]
+        self.solves = 0
+
+    def _insert(self, lam: float, pit: np.ndarray) -> int:
+        i = 0
+        while i < len(self.lams) and self.lams[i] < lam:
+            i += 1
+        if i < len(self.lams) and self.lams[i] == lam:
+            return i
+        self.lams.insert(i, lam)
+        self.pits.insert(i, pit)
+        self.caps.insert(i, float(self.a[pit].sum()))
+        self.vals.insert(i, float(self.v[pit].sum()))
+        return i
+
+    def at(self, lam: float) -> int:
+        """Index of the (possibly newly solved) entry for this multiplier."""
+        for i, existing in enumerate(self.lams):
+            if existing == lam:
+                return i
+        # the pit at lam is contained in the pit at any smaller multiplier: restrict to the nearest
+        candidates = self.pits[0]
+        for i, existing in enumerate(self.lams):
+            if existing < lam:
+                candidates = self.pits[i]
+            else:
+                break
+        pit = max_closure_within(self.v - lam * self.a, self.prec, candidates)
+        self.solves += 1
+        return self._insert(lam, pit)
+
+    def extend_until_below(self, target: float, lam_hint: float) -> None:
+        """Make sure at least one known entry has capacity at or below ``target``."""
+        lam = max(lam_hint, 1.0)
+        while self.caps[-1] > target:
+            self.at(lam)
+            lam *= 4.0
+            if lam > 1e18:
+                raise AssertionError("no multiplier empties the pit; check the resource coefficients")
+
+    def _brackets(self, target: float) -> tuple[int, int]:
+        u = max(j for j in range(len(self.caps)) if self.caps[j] >= target)
+        low = min(j for j in range(len(self.caps)) if self.caps[j] <= target)
+        return u, low
+
+    def solve_cp(self, target: float, *, max_refine: int = 80, tol: float = 1e-9) -> tuple[int, int, float, float]:
+        """Optimum of ``CP(target) = max v.x`` over closures with ``a.x <= target``.
+
+        Returns ``(u, l, alpha, z)`` where the optimal fractional solution is
+        ``alpha * pit[l] + (1 - alpha) * pit[u]`` and ``z`` is its value.
+
+        The stopping rule is the certificate itself, not a guess at how many bisections are enough.
+        Strong duality gives ``CP(U) = min_lambda [ UPL(v - lambda a) + lambda U ]``, so the search
+        refines until the primal estimate and that dual expression agree. When they do, the two
+        bracketing pits are consecutive break-points; when they do not, they are not, whatever the
+        interval width says.
+        """
+        u, low = self._brackets(target)
+        for _ in range(max_refine):
+            if u >= low:
+                return u, u, 1.0, self.vals[u]
+            b_u, b_l = self.caps[u], self.caps[low]
+            alpha = 1.0 if b_u - b_l <= _TOL else min(1.0, max(0.0, (b_u - target) / (b_u - b_l)))
+            z = alpha * self.vals[low] + (1.0 - alpha) * self.vals[u]
+            lam = self.lams[low]
+            dual = float((self.v - lam * self.a)[self.pits[low]].sum()) + lam * target
+            if abs(dual - z) <= tol * max(1.0, abs(z)):
+                return u, low, alpha, z
+            lo, hi = self.lams[u], self.lams[low]
+            if hi - lo <= 1e-13 * max(1.0, hi):
+                return u, low, alpha, z
+            self.at(0.5 * (lo + hi))
+            u, low = self._brackets(target)
+        u, low = self._brackets(target)
+        b_u, b_l = self.caps[u], self.caps[low]
+        alpha = 1.0 if b_u - b_l <= _TOL else min(1.0, max(0.0, (b_u - target) / (b_u - b_l)))
+        return u, low, alpha, alpha * self.vals[low] + (1.0 - alpha) * self.vals[u]
 
 
 def cpit_lp_relaxation(
@@ -175,10 +266,9 @@ def cpit_lp_relaxation(
         raise ValueError("resource coefficients must be non-negative")
     caps = np.cumsum(np.asarray(inst.limit[resource], dtype=np.float64))
 
-    solves = 0
     full = solve_upit(v, prec)
-    solves += 1
     a_full = float(a[full.in_pit].sum())
+    family = _ParametricPits(v, a, prec, full.in_pit)
 
     x = np.zeros((t_max, n), dtype=np.float64)
     zval = np.zeros(t_max, dtype=np.float64)
@@ -188,9 +278,8 @@ def cpit_lp_relaxation(
     # a multiplier large enough to empty the pit: beyond max(v/a) every block prices negative
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.where(a > 0, v / np.where(a > 0, a, 1.0), -np.inf)
-    lam_max = float(max(1.0, np.nanmax(ratio[np.isfinite(ratio)], initial=1.0))) * 2.0 + 1.0
+    lam_hint = float(max(1.0, np.nanmax(ratio[np.isfinite(ratio)], initial=1.0)))
 
-    candidates = full.in_pit.copy()
     for t in range(t_max - 1, -1, -1):
         target = float(caps[t])
         if a_full <= target + _TOL:
@@ -199,51 +288,29 @@ def cpit_lp_relaxation(
             zval[t] = float(v[full.in_pit].sum())
             integral[t] = True
             lam_used[t] = 0.0
-            candidates = full.in_pit.copy()
             continue
 
-        lo, hi = 0.0, lam_max
-        pit_lo = candidates.copy()  # f(lo) > target
-        pit_hi = np.zeros(n, dtype=bool)  # f(hi) <= target
-        for _ in range(max_bisections):
-            mid = 0.5 * (lo + hi)
-            pit_mid = _pit_at(v, prec, a, mid, pit_lo)
-            solves += 1
-            if float(a[pit_mid].sum()) > target + _TOL:
-                lo, pit_lo = mid, pit_mid
-            else:
-                hi, pit_hi = mid, pit_mid
-            if hi - lo <= 1e-12 * max(1.0, hi):
-                break
-
-        b_u = float(a[pit_lo].sum())
-        b_l = float(a[pit_hi].sum())
-        z_u = float(v[pit_lo].sum())
-        z_l = float(v[pit_hi].sum())
-        if b_u - b_l <= _TOL:
-            alpha = 1.0
-            integral[t] = True
-        else:
-            alpha = (b_u - target) / (b_u - b_l)
-            alpha = min(1.0, max(0.0, alpha))
-            integral[t] = alpha in (0.0, 1.0)
-        xt = np.where(pit_lo, 1.0 - alpha, 0.0)
-        xt[pit_hi] = 1.0
+        family.extend_until_below(target, lam_hint)
+        u, low, alpha, z = family.solve_cp(target, max_refine=max_bisections)
+        pit_u, pit_l = family.pits[u], family.pits[low]
+        integral[t] = u == low or alpha in (0.0, 1.0)
+        xt = np.where(pit_u, 1.0 - alpha, 0.0)
+        xt[pit_l] = 1.0
         x[t] = xt
-        zval[t] = alpha * z_l + (1.0 - alpha) * z_u
-        lam_used[t] = hi
+        zval[t] = z
+        lam_used[t] = family.lams[low]
 
         if check_duality:
             # strong duality: CP(U) = min_lambda [ UPL(p - lambda a) + lambda U ]
-            lam = hi
-            dual = float((v - lam * a)[pit_hi].sum()) + lam * target
+            lam = family.lams[low]
+            dual = float((v - lam * a)[pit_l].sum()) + lam * target
             scale = max(1.0, abs(zval[t]))
             if abs(dual - zval[t]) > 1e-5 * scale:
                 raise AssertionError(
                     f"period {t + 1}: primal {zval[t]:.6f} and dual {dual:.6f} disagree "
                     f"(lambda {lam:.6g}); the critical multiplier did not converge"
                 )
-        candidates = pit_lo.copy()
+    solves = family.solves + 1
 
     # monotonicity across periods (Chicoisne et al. Proposition 3.2)
     for t in range(t_max - 1):
