@@ -3,6 +3,10 @@
 ## [0.2.1] - 2026-08-07
 
 ### Fixed
+- `read_blocks` called `float()` on every column after `id x y z` and therefore crashed on the
+  published `newman1.blocks`, whose first free column is a rock-type code (`FRWS`, `FROR`, `OXOR`).
+  Non-numeric tokens now become `NaN` in `free` and are kept verbatim in a new `labels` dict, so a
+  real published file reads and nothing is guessed.
 - The critical multiplier algorithm re-derived the same parametric pits once per period. The
   break-points of the family do not depend on the period, only the target capacity does, so they are
   now solved lazily into a shared cache and every new solve is restricted to the smallest known pit
