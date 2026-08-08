@@ -647,6 +647,7 @@ def solve_cpit(
     *,
     method: str = "expected",
     local_search: bool = True,
+    bound: bool = True,
 ) -> tuple[ScheduleResult, list[LpRelaxation]]:
     """Bound then schedule then improve: the whole ladder in one call.
 
@@ -654,8 +655,22 @@ def solve_cpit(
     relaxations that produced the bound. With ``method='expected'`` this is the ExTS procedure: run
     the critical multiplier algorithm per resource, take the expected extraction times from the
     relaxation whose objective is smallest, schedule from them, and improve by shifting.
+
+    ``bound=False`` SKIPS the certified bound and returns a schedule with ``bound=None``. The bound
+    costs a parametric family of maximum closures per resource, hundreds of them, while a schedule
+    from a combinatorial weight costs one closure; a caller that needs many schedules and no bound
+    pays a factor of a hundred for a number it discards. The uncertainty ensemble is exactly that
+    caller: it re-solves once per realisation and compares NPVs, and it never reads the bound. Left
+    on by default, this turned a thirteen-case bake into a four-hour run that finished one case.
+    ``method='expected'`` needs the relaxation by definition and is rejected here rather than
+    silently downgraded.
     """
-    bound, relaxations = cpit_bound_two_resources(inst, prec)
+    if not bound and method == "expected":
+        raise ValueError("method='expected' needs the LP relaxation, so it needs bound=True")
+    if bound:
+        certified, relaxations = cpit_bound_two_resources(inst, prec)
+    else:
+        certified, relaxations = None, []
     v = _finite_values(inst)
     allowed = solve_upit(v, prec).in_pit
 
@@ -671,13 +686,13 @@ def solve_cpit(
     else:
         result = toposort_schedule(inst, prec, weight=method, allowed=allowed)
 
-    result.bound = bound
+    result.bound = certified
     if local_search:
         result = improve_schedule(inst, prec, result)
-        result.bound = bound
-    if result.npv > bound + 1e-6 * max(1.0, abs(bound)):
+        result.bound = certified
+    if certified is not None and result.npv > certified + 1e-6 * max(1.0, abs(certified)):
         raise AssertionError(
-            f"feasible objective {result.npv:.4f} exceeds the certified bound {bound:.4f}"
+            f"feasible objective {result.npv:.4f} exceeds the certified bound {certified:.4f}"
         )
     return result, relaxations
 
