@@ -241,13 +241,13 @@ def test_the_ensemble_is_mean_preserving_and_spatially_correlated():
     assert near > far, "the perturbation is white noise, which makes uncertainty look harmless"
 
 
-def test_evpi_is_none_without_real_per_realisation_optima():
+def test_replanning_value_is_none_without_per_realisation_solves():
     twin, inst = _instance()
     ix, iy, lev = twin.deposit.grid.coord_arrays()
     ens = ob.perturb_values(twin.values.astype(float), ix, iy, lev, n=6, seed=2)
     base, _ = ob.solve_cpit(inst, twin.precedence)
     out = ob.evaluate_across(inst, ens, {"base": base.period_of_block})
-    assert out.value_of_information is None, "EVPI without re-optimisation would overstate the case"
+    assert out.value_of_replanning is None, "a replanning value without re-solves would be invented"
     assert out.value_of_plan_selection == pytest.approx(0.0, abs=1e-6)
 
 
@@ -265,3 +265,31 @@ def test_ensemble_reports_a_distribution_and_a_robust_choice():
     assert (out.expected <= out.p90 + 1e-9).all()
     assert out.best_by_expected in plans
     assert out.best_by_p10 in plans
+
+
+def test_replanning_value_is_non_negative_when_the_caller_takes_the_maximum():
+    """The trap: a fixed plan can beat a heuristic re-solve on a lucky realisation, so a naive
+    difference goes NEGATIVE and a negative value of information is a naming error, not a finding."""
+    twin, inst = _instance()
+    prec = twin.precedence
+    ix, iy, lev = twin.deposit.grid.coord_arrays()
+    ens = ob.perturb_values(twin.values.astype(float), ix, iy, lev, n=6, seed=5)
+    plans = {w: ob.toposort_schedule(inst, prec, weight=w).period_of_block for w in ob.TOPOSORT_WEIGHTS}
+
+    resolved = []
+    for j in range(ens.n_realisations):
+        ij = ob.Cpit(
+            name="r", n_blocks=inst.n_blocks, n_periods=inst.n_periods,
+            discount_rate=inst.discount_rate, value=ens.values[j], limit=inst.limit,
+            sense=inst.sense, coef=inst.coef,
+        )
+        rj, _ = ob.solve_cpit(ij, prec)
+        resolved.append(rj.npv)
+
+    naive = ob.evaluate_across(inst, ens, plans, per_realisation_optimum=np.array(resolved))
+    honest = ob.evaluate_across(
+        inst, ens, plans,
+        per_realisation_optimum=np.maximum(np.array(resolved), naive.per_realisation_best),
+    )
+    assert honest.value_of_replanning >= -1e-9
+    assert honest.value_of_replanning >= naive.value_of_replanning - 1e-9

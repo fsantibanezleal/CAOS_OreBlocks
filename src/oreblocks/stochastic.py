@@ -159,12 +159,19 @@ class EnsembleResult:
         return float(self.per_realisation_best.mean() - self.expected.max())
 
     @property
-    def value_of_information(self) -> float | None:
-        """EVPI: what a PERFECT forecast would be worth. A ceiling on any stochastic method's gain.
+    def value_of_replanning(self) -> float | None:
+        """What it is worth to RE-PLAN once the realisation is known, rather than commit in advance.
 
-        Requires ``per_realisation_optimum``, that is, the problem actually re-solved on each
-        realisation. Returns ``None`` otherwise rather than substituting the much smaller
-        plan-selection value and hoping nobody checks.
+        A **lower bound on EVPI**, and it is important that it is only that. True EVPI needs the
+        per-realisation OPTIMUM, and the per-realisation solve available here is a heuristic, so this
+        quantity understates by however much that heuristic loses. Calling it EVPI would claim a
+        ceiling this cannot certify.
+
+        The caller must pass ``per_realisation_optimum`` as the best value it can actually achieve on
+        each realisation, which means taking the maximum of the re-solve and every candidate plan
+        already evaluated. Without that maximum the number can come out NEGATIVE, because a fixed plan
+        can beat a heuristic re-solve on a lucky realisation, and a negative "value of information" is
+        a naming error rather than a finding.
         """
         if self.per_realisation_optimum is None:
             return None
