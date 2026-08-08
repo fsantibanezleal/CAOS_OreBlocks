@@ -753,3 +753,170 @@ def run_controls(inst: Cpit, prec: Precedence, result: ScheduleResult | None = N
         order_invariant=bool(spread <= 1e-6 * scale),
         order_invariance_error=spread,
     )
+
+
+# ------------------------------------------------------------------------------------------------
+# the joint bound: CPIT as a General Precedence Constrained Problem, solved by Bienstock-Zuckerberg
+# ------------------------------------------------------------------------------------------------
+def cpit_to_gpcp(inst: Cpit, prec: Precedence):
+    """Time-expand CPIT into the GPCP form the Bienstock-Zuckerberg algorithm solves.
+
+    The cumulative variable ``x_bt`` becomes node ``b * T + t``. Three families of arcs and one family
+    of side constraints, all transcribed from Chicoisne et al. 2012 equations (3a)-(3f):
+
+    - **precedence in every period**  ``x_bt <= x_at`` for each arc and each ``t``
+    - **monotonicity**                ``x_bt <= x_b,t+1``
+    - **capacity**  ``sum_b a_rb (x_bt - x_b,t-1) <= c_rt``, which in the z-space has a POSITIVE
+      coefficient on ``(b, t)`` and a NEGATIVE one on ``(b, t-1)``. Side rows with negative entries
+      are exactly why this needs BZ rather than a second parametric closure.
+
+    The objective in the cumulative variables is ``sum_t gamma_t (x_t . v)`` by Abel summation, the
+    same identity the critical multiplier algorithm uses.
+    """
+    from .bz import Gpcp
+
+    n, t_max = inst.n_blocks, inst.n_periods
+    v = _finite_values(inst)
+    g_w = inst.gamma()
+
+    c = np.empty(n * t_max, dtype=np.float64)
+    for t in range(t_max):
+        c[t::t_max] = g_w[t] * v
+
+    pf: list[np.ndarray] = []
+    pt: list[np.ndarray] = []
+    owner = np.repeat(np.arange(n, dtype=np.int64), np.diff(prec.pstart))
+    for t in range(t_max):
+        pf.append(owner * t_max + t)
+        pt.append(prec.plist.astype(np.int64) * t_max + t)
+    blocks = np.arange(n, dtype=np.int64)
+    for t in range(t_max - 1):
+        pf.append(blocks * t_max + t)
+        pt.append(blocks * t_max + t + 1)
+
+    h_rows: list[tuple[np.ndarray, np.ndarray]] = []
+    h_rhs: list[float] = []
+    for r in range(inst.n_resources):
+        a = np.asarray(inst.coef[r], dtype=np.float64)
+        nz = np.nonzero(a)[0]
+        for t in range(t_max):
+            idx = nz * t_max + t
+            coef = a[nz]
+            if t > 0:
+                idx = np.concatenate([idx, nz * t_max + (t - 1)])
+                coef = np.concatenate([coef, -a[nz]])
+            h_rows.append((idx.astype(np.int64), coef))
+            h_rhs.append(float(inst.limit[r][t]))
+
+    return Gpcp(
+        n=n * t_max,
+        c=c,
+        prec_from=np.concatenate(pf).astype(np.int64),
+        prec_to=np.concatenate(pt).astype(np.int64),
+        h_rows=h_rows,
+        h_rhs=np.array(h_rhs, dtype=np.float64),
+    )
+
+
+def cpit_bz_bound(inst: Cpit, prec: Precedence, **kw):
+    """The JOINT LP bound over all resources at once, by Bienstock-Zuckerberg.
+
+    Use it where :func:`cpit_bound_two_resources` is loose. That function relaxes all but one
+    resource and keeps the smallest of the resulting bounds, which is certified and, on an instance
+    where two capacities both bind, materially weaker. The difference between the two numbers is the
+    part of a reported gap that belongs to the BOUND rather than to the heuristic, and separating
+    those is the only reason to run this.
+
+    Needs scipy for the restricted master. Install ``oreblocks[milp]``.
+    """
+    from .bz import solve_gpcp_lp
+
+    return solve_gpcp_lp(cpit_to_gpcp(inst, prec), **kw)
+
+
+# ------------------------------------------------------------------------------------------------
+# the sliding time window heuristic, which is what industry actually runs
+# ------------------------------------------------------------------------------------------------
+def sliding_window_schedule(
+    inst: Cpit,
+    prec: Precedence,
+    *,
+    window: int = 3,
+    fix: int = 1,
+    allowed: np.ndarray | None = None,
+    relaxation: LpRelaxation | None = None,
+) -> ScheduleResult:
+    """Cullenbine, Wood and Newman, Optimization Letters, 2011, doi:10.1007/s11590-011-0306-2.
+
+    Enforce every constraint inside a window of ``window`` periods, treat everything after it as a
+    single aggregated tail, fix the first ``fix`` periods of the answer, slide, repeat. It is the
+    heuristic Rio Tinto's platform uses to seed its large neighbourhood search (Blom, Pearce and Cote,
+    arXiv:2403.18213), so it is on this ladder as the industrial baseline rather than as an academic
+    one.
+
+    Inside each window the sub-problem is solved with the same expected-time TopoSort the SOTA rung
+    uses, restricted to the blocks not yet fixed, which keeps the whole thing exact-free and fast.
+    """
+    n, t_max = inst.n_blocks, inst.n_periods
+    v = _finite_values(inst)
+    if allowed is None:
+        allowed = solve_upit(v, prec).in_pit
+    if relaxation is None:
+        relaxation = cpit_lp_relaxation(inst, prec)
+    base_w = -relaxation.expected_times()
+
+    period = np.full(n, -1, dtype=np.int64)
+    remaining = np.array(inst.limit, dtype=np.float64).copy()
+    decided = np.zeros(n, dtype=bool)
+    start = 0
+    while start < t_max:
+        stop = min(t_max, start + window)
+        live = allowed & ~decided
+        order = toposort_order(prec, base_w, live)
+        for b in order:
+            earliest = start
+            blocked = False
+            for k in range(prec.pstart[b], prec.pstart[b + 1]):
+                p = int(prec.plist[k])
+                if not allowed[p]:
+                    continue
+                if period[p] < 0:
+                    blocked = True
+                    break
+                earliest = max(earliest, int(period[p]))
+            if blocked:
+                continue
+            need = inst.coef[:, b]
+            placed = -1
+            for t in range(max(earliest, start), stop):
+                if all(remaining[r, t] >= need[r] - _TOL for r in range(inst.n_resources)):
+                    placed = t
+                    break
+            if placed < 0:
+                continue
+            period[b] = placed
+            for r in range(inst.n_resources):
+                remaining[r, placed] -= need[r]
+        # Freeze the first `fix` periods of this window, then UNDO everything after them and give
+        # their capacity back. Without the undo the next window re-plans blocks that already consumed
+        # capacity, so the plan quietly double-books the fleet and the objective collapses. That is
+        # the whole point of a sliding window: only the frozen prefix is a decision.
+        frozen_to = min(stop, start + fix)
+        for t in range(start, frozen_to):
+            decided |= period == t
+        for b in np.nonzero(period >= frozen_to)[0]:
+            remaining[:, period[b]] += inst.coef[:, b]
+            period[b] = -1
+        start += fix
+
+    npv, per_val, per_res = schedule_value(inst, period)
+    return ScheduleResult(
+        method=f"sliding-window(w={window},f={fix})",
+        period_of_block=period,
+        npv=npv,
+        per_period_value=per_val,
+        per_period_resource=per_res,
+        mined_blocks=int((period >= 0).sum()),
+        heuristic=True,
+        notes=f"window {window}, {fix} period(s) fixed per slide",
+    )
