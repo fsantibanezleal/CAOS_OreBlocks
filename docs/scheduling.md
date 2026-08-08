@@ -291,8 +291,7 @@ varied parameters and read the spread.
 
 It reports the NPV distribution of each candidate plan across a spatially correlated, mean-preserving
 ensemble; P10 and P90; the **robust choice by P10**, which is often not the plan with the best
-expected value; the **optimism of the single-model forecast**; and a true **EVPI** that requires the
-problem actually re-solved on each realisation. The much smaller value of merely knowing which
+expected value; the **optimism of the single-model forecast**; and the **value of re-planning** once the realisation is known, which requires the problem actually re-solved on each realisation and is a LOWER bound on EVPI rather than EVPI itself. The much smaller value of merely knowing which
 candidate plan to pick is reported separately and never labelled EVPI.
 
 Two modelling choices that are easy to get wrong and are asserted in the tests: the perturbation is
