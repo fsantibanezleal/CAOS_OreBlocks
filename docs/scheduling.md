@@ -196,6 +196,109 @@ mined blocks along a bench (a crude proxy for minimum mining width, which Bai et
 [doi:10.17159/2411-9717/2018/v118n5a8](https://doi.org/10.17159/2411-9717/2018/v118n5a8), target at
 about 100 m for equipment reasons).
 
+
+## 9. The rest of the ladder (0.3.0)
+
+### 9.1 The joint bound: Bienstock-Zuckerberg
+
+`cpit_bound_two_resources` relaxes all but one resource and keeps the smallest of the resulting
+bounds. Every one of them is valid, so the minimum is certified, and on an instance where two
+capacities both bind it is **loose**. That matters because a reported gap then mixes two different
+things: how much the heuristic loses, and how much the bound loses.
+
+`cpit_bz_bound` computes the JOINT bound over all resources at once. It is column generation whose
+restricted master runs over the LINEAR hull of the precedence polytope, with generator matrices whose
+columns are orthogonal 0-1 vectors, so restricting to their span EQUATES the variables inside each
+support and contracts the problem. The pricing problem is `max (c - pi'H)'v` over closures, which is a
+maximum closure, which is a minimum cut.
+
+| instance | Algorithm 4 | BZ joint | published |
+|---|---|---|---|
+| `newman1.cpit` | 24,487,410 | **24,486,184** | 24,486,549 (PCPSP LP) |
+
+The ordering is the check: the CPIT LP bound must sit below the PCPSP LP bound, because PCPSP is the
+richer problem, and it does. On a **single**-resource instance BZ and the critical multiplier
+algorithm agree to machine precision, which is two entirely different algorithms computing the same
+LP and the strongest correctness check in the suite.
+
+`Z_BZ = Z_LP` still holds (Munoz et al.,
+[doi:10.1007/s10589-017-9946-1](https://doi.org/10.1007/s10589-017-9946-1)). BZ is a speed result and
+a joint-bound result, never a tighter-than-LP one.
+
+### 9.2 The exact C-PIT[D] local search
+
+`refine.exact_local_search` implements Chicoisne et al. section 3.3: fix every block outside a small
+set `D` at its incumbent period and re-solve the restricted problem EXACTLY as a MILP. All three of
+their neighbourhood constructions, chosen with equal probability: a connected subset of a random
+block's predecessors, the same with successors, and the blocks scheduled in `t-1, t, t+1`.
+
+This is the rung `improve_schedule` is explicitly not. The shift neighbourhood cannot move a block and
+its cone together; this can, and the difference is the last few percent of the gap.
+
+### 9.3 The sliding time window
+
+`sliding_window_schedule` (Cullenbine, Wood and Newman,
+[doi:10.1007/s11590-011-0306-2](https://doi.org/10.1007/s11590-011-0306-2)): enforce every constraint
+inside a window, fix the first period or two, slide. It is what industry runs, and it is what Rio
+Tinto's platform uses to seed its large neighbourhood search.
+
+**The bug this shipped with, worth recording**: the first version re-planned blocks that had already
+consumed capacity in an earlier window, so the plan quietly double-booked the fleet and the objective
+collapsed to a third of its value while every feasibility check still passed. Only the frozen prefix
+is a decision; everything after it must be released before the next slide.
+
+### 9.4 Destinations: when the cutoff grade becomes an output
+
+`destinations.destination_toposort` chooses each block's destination against the capacity remaining in
+the period it is scheduled into. When the plant is full the same block goes to waste, so the effective
+cutoff RISES exactly in the periods where processing binds. That is the qualitative difference between
+CPIT and PCPSP made visible: in CPIT the cutoff is a number decided before the model ran.
+
+`destinations.solve_opbsp_exact` solves the fully binary formulation exactly with HiGHS, in the
+variables Jelvez et al. use, and returns `None` above a size budget rather than passing a heuristic
+answer off as an exact one.
+
+### 9.5 Lane's cutoff-grade policy
+
+`refine.lane_cutoffs` computes the three limiting cutoffs and the balancing cutoffs between them. The
+break-even cutoff makes a tonne pay for its own processing; Lane's point is that this is the wrong
+cutoff whenever a capacity binds, because a marginal tonne consumes a scarce hour and pushes every
+profitable tonne behind it further into the discount.
+
+Two results the implementation reproduces and the tests assert:
+
+- the **mine-limiting cutoff equals break-even**, which is not an oversight: when the shovels are the
+  bottleneck the scarce hour is a mining hour, and ore and waste consume it identically, so the
+  opportunity cost cancels out of the ore-versus-waste comparison.
+- the economic cutoff **declines over the life of a mine**, because the opportunity cost falls as
+  there is less value left to delay.
+
+### 9.6 Minimum mining width
+
+`refine.enforce_min_width` absorbs slivers into the period of their majority bench neighbour, toward a
+target width. It reports how many blocks sat in a run narrower than the target before and after, and
+what the change cost in NPV, because an operable plan is worth less on paper than an inoperable one
+and hiding that is how a schedule looks better than it is.
+
+Precedence cuts both ways here and the first version only checked one: moving a block later can be
+overtaken by a successor already scheduled ahead of it.
+
+### 9.7 Geological uncertainty, framed honestly
+
+`stochastic` does NOT solve a two-stage stochastic integer program. It does what practitioners
+actually do, in Blom, Pearce and Cote's words: solve many instances of a deterministic problem with
+varied parameters and read the spread.
+
+It reports the NPV distribution of each candidate plan across a spatially correlated, mean-preserving
+ensemble; P10 and P90; the **robust choice by P10**, which is often not the plan with the best
+expected value; the **optimism of the single-model forecast**; and the **value of re-planning** once the realisation is known, which requires the problem actually re-solved on each realisation and is a LOWER bound on EVPI rather than EVPI itself. The much smaller value of merely knowing which
+candidate plan to pick is reported separately and never labelled EVPI.
+
+Two modelling choices that are easy to get wrong and are asserted in the tests: the perturbation is
+**spatially correlated** (uncorrelated noise averages out over a pushback and makes uncertainty look
+harmless) and **mean-preserving** (box smoothing does not centre a finite field, and a biased
+multiplier corrupts the optimism number the module exists to report).
+
 ## 8. What is deliberately not here
 
 - **Stockpiles.** An inventory whose reclaimed grade is the blend of what is inside makes the model

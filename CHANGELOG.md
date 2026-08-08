@@ -1,5 +1,59 @@
 # Changelog
 
+## [0.3.0] - 2026-08-08
+
+The rest of the ladder: the joint bound, the exact local search, the destination decision, the
+cutoff-grade theory, operability, and geological uncertainty. Everything that 0.2 named as not
+implemented and every rung the mine-scheduling literature actually uses.
+
+### Added
+- **`bz`: the Bienstock-Zuckerberg decomposition**, as column generation over the LINEAR hull of the
+  precedence polytope with orthogonal 0-1 generator matrices, per Munoz, Espinoza, Goycoolea, Moreno,
+  Queyranne and Rivera Letelier (doi:10.1007/s10589-017-9946-1). The pricing problem is a maximum
+  closure, so it rides on the same max-flow the package already ships, and it terminates on the
+  duality certificate rather than an iteration cap. `cpit_bz_bound` gives the JOINT bound over all
+  resources, which `cpit_bound_two_resources` cannot: that one relaxes all but one resource and keeps
+  the smallest result, which is certified and loose. On the published `newman1.cpit` BZ converges in
+  9 iterations and 1.6 s to 24,486,184 against Algorithm 4's 24,487,410, and sits correctly below the
+  published PCPSP LP bound of 24,486,549.
+- **`sliding_window_schedule`**: the sliding time window heuristic (Cullenbine, Wood and Newman,
+  doi:10.1007/s11590-011-0306-2), the industrial baseline that Rio Tinto's platform uses to seed its
+  large neighbourhood search.
+- **`refine.exact_local_search`**: the exact `C-PIT[D]` neighbourhood (Chicoisne et al. 2012 section
+  3.3), all three of their neighbourhood constructions, each re-solved as a restricted MILP. This is
+  the rung `improve_schedule` is explicitly NOT.
+- **`destinations`**: PCPSP and OPBSP. `destination_toposort` chooses each block's destination against
+  the remaining capacity, so the cutoff grade becomes an OUTPUT of the schedule rather than an input;
+  `solve_opbsp_exact` solves the fully binary formulation (Jelvez et al. 2018 equations 3-10) exactly
+  with HiGHS, and returns `None` rather than passing a heuristic off as exact when the instance is
+  too large.
+- **`refine.lane_cutoffs`**: Lane's three limiting cutoffs and the balancing cutoffs between them,
+  with the opportunity cost that makes the economic cutoff decline over the life of a mine.
+- **`refine.enforce_min_width`**: adaptive opening toward a minimum mining width (Bai et al. 2018),
+  reporting how many slivers it absorbed and what the operability cost in NPV.
+- **`stochastic`**: a spatially correlated, mean-preserving ensemble, every candidate plan scored on
+  every realisation, P10 and P90, the robust choice by P10, the optimism of the single-model forecast,
+  and a true EVPI that requires the problem actually re-solved per realisation. The plan-selection
+  value is reported separately and never labelled EVPI.
+- Optional extra `oreblocks[milp]` (scipy) for the BZ master, the exact local search, and OPBSP.
+
+### Fixed
+- The sliding window re-planned blocks that had already consumed capacity, double-booking the fleet
+  and collapsing the objective to a third of its value. The frozen prefix is now the only decision and
+  everything after it is released before the next slide.
+- `enforce_min_width` checked only predecessors, so moving a block later could be overtaken by a
+  successor already scheduled ahead of it. Precedence cuts both ways and is now checked both ways.
+- The ensemble perturbation was not mean-preserving (box smoothing does not centre a finite field),
+  which biased the one number the module exists to report.
+
+### Notes
+- `Z_BZ = Z_LP` still holds and is still stated: BZ is a speed result and a JOINT-bound result, never
+  a tighter-than-LP result. On a single resource it agrees with the critical multiplier algorithm to
+  machine precision, which is the strongest correctness check in the suite.
+- Still not implemented, on purpose: stockpiles with inventory and rehandle (bilinear), blending and
+  other general side constraints, minimum-production (`sense = 'G'`) constraints, and true two-stage
+  stochastic integer programming.
+
 ## [0.2.1] - 2026-08-07
 
 ### Fixed
