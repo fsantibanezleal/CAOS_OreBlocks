@@ -12,9 +12,11 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
+from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
+from .destinations import DestinationSchedule, destination_toposort, solve_opbsp_exact
 from .economics import Econ, block_values, cutoff_grade, is_ore
 from .extraction import ExtractionState, Face, extraction_state, loading_faces
 from .fields import ARCHETYPES, Deposit, make_deposit
@@ -30,21 +32,32 @@ from .minelib_models import (
     write_pcpsp,
 )
 from .precedence import Precedence, build_precedence, slope_offsets
+from .refine import (
+    CutoffPolicy,
+    SmoothingReport,
+    enforce_min_width,
+    exact_local_search,
+    lane_cutoffs,
+)
 from .schedule import (
     TOPOSORT_WEIGHTS,
     Controls,
     LpRelaxation,
     ScheduleResult,
     cpit_bound_two_resources,
+    cpit_bz_bound,
     cpit_lp_relaxation,
+    cpit_to_gpcp,
     expected_extraction_times,
     improve_schedule,
     run_controls,
     schedule_value,
+    sliding_window_schedule,
     solve_cpit,
     toposort_order,
     toposort_schedule,
 )
+from .stochastic import EnsembleResult, RealisationSet, evaluate_across, perturb_values
 from .twins import Twin, make_twin
 from .upit import UpitResult, max_closure_within, solve_upit
 
@@ -54,10 +67,17 @@ __all__ = [
     "FORBIDDEN_VALUE",
     "TOPOSORT_WEIGHTS",
     "BlockGrid",
+    "BzResult",
     "Controls",
     "Cpit",
+    "CutoffPolicy",
     "Deposit",
+    "Gpcp",
     "Econ",
+    "SmoothingReport",
+    "RealisationSet",
+    "EnsembleResult",
+    "DestinationSchedule",
     "ExtractionState",
     "Face",
     "LpRelaxation",
@@ -70,6 +90,8 @@ __all__ = [
     "block_values",
     "build_precedence",
     "cpit_bound_two_resources",
+    "cpit_bz_bound",
+    "cpit_to_gpcp",
     "cpit_lp_relaxation",
     "cutoff_grade",
     "expected_extraction_times",
@@ -90,8 +112,17 @@ __all__ = [
     "run_controls",
     "schedule_coherence",
     "schedule_value",
+    "sliding_window_schedule",
     "slope_offsets",
+    "solve_gpcp_lp",
     "solve_cpit",
+    "destination_toposort",
+    "enforce_min_width",
+    "evaluate_across",
+    "exact_local_search",
+    "lane_cutoffs",
+    "perturb_values",
+    "solve_opbsp_exact",
     "solve_upit",
     "toposort_order",
     "toposort_schedule",
