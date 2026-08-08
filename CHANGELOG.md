@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] - 2026-08-08
+
+### Added
+- **`solve_cpit(..., bound=False)`**: schedule without computing the certified bound. The bound is a
+  parametric family of maximum closures per resource, hundreds of them; a schedule from a
+  combinatorial weight is one closure and a topological pass. A caller that needs many schedules and
+  no bound was paying a factor of a hundred for a number it discarded, which is what an uncertainty
+  ensemble does once per realisation. Measured: a thirteen-case downstream bake spent four hours and
+  finished one case inside that loop. `method='expected'` needs the relaxation by definition and is
+  rejected with `bound=False` rather than silently downgraded, and `ScheduleResult.bound` is `None`
+  so nothing downstream can mistake a missing bound for a computed one.
+
 ## [0.3.0] - 2026-08-08
 
 The rest of the ladder: the joint bound, the exact local search, the destination decision, the

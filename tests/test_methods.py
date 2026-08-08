@@ -293,3 +293,39 @@ def test_replanning_value_is_non_negative_when_the_caller_takes_the_maximum():
     )
     assert honest.value_of_replanning >= -1e-9
     assert honest.value_of_replanning >= naive.value_of_replanning - 1e-9
+
+
+def test_solve_cpit_without_the_bound_is_feasible_and_much_cheaper() -> None:
+    """A caller that needs many schedules and no bound must not pay for the bound.
+
+    The certified bound is a parametric family of maximum closures per resource; a schedule from a
+    combinatorial weight is one closure and a topological pass. The ensemble calls this once per
+    realisation and never reads a bound, and leaving the bound on made a thirteen-case bake spend
+    four hours on one case.
+    """
+    import time
+
+    twin, inst = _instance()
+    prec = twin.precedence
+
+    t0 = time.perf_counter()
+    cheap, rels = ob.solve_cpit(inst, prec, method="gershon", bound=False)
+    t_cheap = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    full, _ = ob.solve_cpit(inst, prec)
+    t_full = time.perf_counter() - t0
+
+    assert cheap.bound is None                      # nothing may mistake a missing bound for a real one
+    assert rels == []
+    assert cheap.gap_pct is None
+    assert cheap.npv <= full.bound + 1e-6 * abs(full.bound)   # still a feasible schedule
+    # the whole point: an order of magnitude, not a few percent
+    assert t_cheap < t_full / 5, f"cheap {t_cheap:.3f}s vs full {t_full:.3f}s"
+
+
+def test_expected_weight_is_rejected_without_the_bound() -> None:
+    """ExTS is DEFINED by the LP relaxation, so it cannot be served silently by a weaker weight."""
+    twin, inst = _instance()
+    with pytest.raises(ValueError, match="needs the LP relaxation"):
+        ob.solve_cpit(inst, twin.precedence, method="expected", bound=False)
