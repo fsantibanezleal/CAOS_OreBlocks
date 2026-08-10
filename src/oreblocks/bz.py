@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .fastcut import has_fast_cut, max_closure_fast
 from .upit import max_closure_within
 
 __all__ = ["Gpcp", "BzResult", "solve_gpcp_lp"]
@@ -89,16 +90,31 @@ class BzResult:
     pricing_solves: int
     converged: bool
     gap_at_stop: float
+    #: worst per-call rounding slack of the compiled pricing path, absolute. 0.0 once certified.
+    pricing_slack: float = 0.0
+    #: True when the reported bound comes from an EXACT pricing solve, not a rounded one
+    certified: bool = True
+    #: which max-closure path priced the columns
+    pricing_solver: str = "python"
+    seconds: float = 0.0
 
 
-def _closure_of(g: Gpcp, weights: np.ndarray) -> np.ndarray:
-    """Maximum closure of ``weights`` over the precedence system, as a 0-1 mask.
+def _closure_of(g: Gpcp, weights: np.ndarray, *, fast: bool) -> tuple[np.ndarray, float, float]:
+    """Maximum closure of ``weights`` over the precedence system.
 
-    The package's closure solver takes predecessor lists in CSR, so the arcs are converted once here.
-    A closure in that solver means: if block ``b`` is in, every predecessor of ``b`` is in, which is
-    exactly ``z_b <= z_a`` for a predecessor ``a``.
+    Returns ``(mask, value_upper, slack)``. A closure in this solver means: if block ``b`` is in,
+    every predecessor of ``b`` is in, which is exactly ``z_b <= z_a`` for a predecessor ``a``.
+
+    ``value_upper`` must never UNDER-estimate. The termination certificate is that ``L(pi)`` bounds
+    the optimum for every dual vector, and ``L(pi)`` is built from this value: a pricing solve that
+    came in low would produce a "bound" that is not one. The compiled path rounds its integer
+    capacities in the safe direction for exactly that reason, and reports what the rounding cost.
     """
-    return max_closure_within(weights, g._csr, np.ones(g.n, dtype=bool))  # noqa: SLF001
+    if fast:
+        r = max_closure_fast(weights, g._csr, np.ones(g.n, dtype=bool))  # noqa: SLF001
+        return r.mask, r.value, r.slack
+    mask = max_closure_within(weights, g._csr, np.ones(g.n, dtype=bool))  # noqa: SLF001
+    return mask, float(weights[mask].sum()), 0.0
 
 
 def _build_csr(g: Gpcp) -> None:
@@ -226,6 +242,8 @@ def solve_gpcp_lp(
     tol: float = 1e-7,
     coarsify_at: int = 240,
     start_columns: list[np.ndarray] | None = None,
+    fast_pricing: bool | None = None,
+    time_budget_s: float = 900.0,
 ) -> BzResult:
     """Solve the LP relaxation of a GPCP by the Bienstock-Zuckerberg algorithm.
 
@@ -233,13 +251,19 @@ def solve_gpcp_lp(
     bound on the integer optimum for every dual vector, so once the best pricing bound meets the
     master's value the LP is solved. There is no interval-width guesswork anywhere in the loop.
     """
+    import time
+
     _build_csr(g)
+    fast = has_fast_cut() if fast_pricing is None else bool(fast_pricing)
     cols: list[np.ndarray] = list(start_columns) if start_columns else [np.ones(g.n, dtype=bool)]
     best_ub = np.inf
     pricing_solves = 0
+    worst_slack = 0.0
     z = np.zeros(g.n)
     it = 0
     converged = False
+    best_pi: np.ndarray | None = None
+    started = time.perf_counter()
 
     for it in range(1, max_iter + 1):  # noqa: B007 - `it` is reported in the result
         solved = _solve_master(g, cols)
@@ -255,10 +279,13 @@ def solve_gpcp_lp(
         for r, (idx, coef) in enumerate(g.h_rows):
             if pi[r] != 0.0:
                 np.add.at(weights, idx, -pi[r] * coef)
-        v = _closure_of(g, weights)
+        v, v_value, slack = _closure_of(g, weights, fast=fast)
         pricing_solves += 1
-        l_pi = float(weights[v].sum()) + float(pi @ g.h_rhs)
-        best_ub = min(best_ub, l_pi)
+        worst_slack = max(worst_slack, slack)
+        l_pi = v_value + float(pi @ g.h_rhs)
+        if l_pi < best_ub:
+            best_ub = l_pi
+            best_pi = pi.copy()
 
         if best_ub - z_lower <= tol * max(1.0, abs(best_ub)):
             converged = True
@@ -271,9 +298,33 @@ def solve_gpcp_lp(
             converged = True
             break
         cols = new_cols
+        if time.perf_counter() - started > time_budget_s:
+            # Stop and report. `best_ub` is a valid upper bound at EVERY iteration, so an
+            # unconverged run still returns a certified number, just a looser one; the caller reads
+            # `converged` and says which it got rather than presenting them as the same thing.
+            break
         if len(cols) > coarsify_at:
             # coarsify onto the elementary basis of the incumbent, only after a strict improvement
             cols = _elementary_basis(z) or cols
+
+    # CERTIFY. The compiled pricing path rounds its capacities and therefore OVER-estimates L(pi) by
+    # up to `worst_slack`, which on a time-expanded graph is around 1e-4 relative: the same order as
+    # the tightening the joint bound exists to measure, so a bound built from it cannot answer the
+    # question it was asked. The fix is not more precision, it is the right division of labour. The
+    # rounded solves SEARCH for a good dual vector; L(pi) is a valid upper bound for EVERY pi, so one
+    # exact solve at the best pi found turns the search into a certificate. It costs one more
+    # max-closure and removes the slack entirely.
+    certified = True
+    if fast and best_pi is not None and np.isfinite(best_ub):
+        weights = np.array(g.c, dtype=np.float64)
+        for r, (idx, coef) in enumerate(g.h_rows):
+            if best_pi[r] != 0.0:
+                np.add.at(weights, idx, -best_pi[r] * coef)
+        exact_mask = max_closure_within(weights, g._csr, np.ones(g.n, dtype=bool))  # noqa: SLF001
+        exact_l = float(weights[exact_mask].sum()) + float(best_pi @ g.h_rhs)
+        pricing_solves += 1
+        best_ub = min(best_ub, exact_l)
+        worst_slack = 0.0
 
     return BzResult(
         bound=float(best_ub if np.isfinite(best_ub) else 0.0),
@@ -283,4 +334,8 @@ def solve_gpcp_lp(
         pricing_solves=pricing_solves,
         converged=converged,
         gap_at_stop=float(best_ub - (z @ g.c)) if np.isfinite(best_ub) else float("inf"),
+        pricing_slack=float(worst_slack),
+        certified=certified,
+        pricing_solver="scipy-maxflow" if fast else "python-dinic",
+        seconds=float(time.perf_counter() - started),
     )

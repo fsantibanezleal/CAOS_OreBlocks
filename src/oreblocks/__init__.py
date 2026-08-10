@@ -12,13 +12,14 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
 from .destinations import DestinationSchedule, destination_toposort, solve_opbsp_exact
 from .economics import Econ, block_values, cutoff_grade, is_ore
 from .extraction import ExtractionState, Face, extraction_state, loading_faces
+from .fastcut import ClosureResult, has_fast_cut, max_closure_fast
 from .fields import ARCHETYPES, Deposit, make_deposit
 from .grid import BlockGrid
 from .minelib_io import read_blocks, read_meta, read_prec, read_upit, write_minelib
@@ -101,6 +102,9 @@ __all__ = [
     "loading_faces",
     "make_deposit",
     "make_twin",
+    "ClosureResult",
+    "has_fast_cut",
+    "max_closure_fast",
     "max_closure_within",
     "period_coherence",
     "read_blocks",
