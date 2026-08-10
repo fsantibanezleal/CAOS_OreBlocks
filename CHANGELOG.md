@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.1] - 2026-08-10
+
+### Fixed
+- **Lane's market-limiting cutoff was wrong by a factor of `1/recovery`.** Lane's is
+  `g = h / (y (p - k - F/K))`, which in this notation is `h / (margin - recovery * F / K)`; the code
+  divided by recovery where Lane multiplies, inflating the opportunity charge by `1/recovery^2`.
+  Measured against the package's own test parameters: +1.6 percent at a recovery of 0.88, +5.8 at
+  0.70, +18.8 at 0.50, +113.8 at 0.30. At those parameters that cutoff is also the median, so
+  `CutoffPolicy.optimum` returned the wrong number as well.
+
+### Changed
+- **`balancing_mine_mill` and `balancing_mill_market` are now `midpoint_mine_mill` and
+  `midpoint_mill_market`.** Lane's balancing cutoffs are the grades at which two capacities are
+  exhausted at once, which is a property of the deposit's GRADE-TONNAGE CURVE. `lane_cutoffs` is given
+  economics only and has no distribution to integrate, so it never computed them. An interpolation
+  between two limiting cutoffs is a usable number; calling it Lane's balancing cutoff was the part
+  that was not true.
+
 ## [0.5.0] - 2026-08-10
 
 ### Changed

@@ -19,7 +19,7 @@ heuristic at 0.937 to 0.986 of the LP bound before local search and 0.955 to 0.9
 **2. Lane's cutoff-grade policy** (Lane 1988, *The Economic Definition of Ore*). The cutoff that
 maximises NPV is not the break-even cutoff: it carries an OPPORTUNITY COST, because processing a
 marginal tonne delays everything behind it. The three limiting cutoffs (mine, mill, market) and the
-balancing cutoffs between them are computed here from the same economics the schedule uses, so the
+midpoints between them are computed here from the same economics the schedule uses, so the
 number a CPIT instance folds into its block values can be shown next to the number Lane's theory says
 it should be.
 
@@ -268,14 +268,18 @@ def exact_local_search(
 # ------------------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class CutoffPolicy:
-    """Lane's three limiting cutoffs plus the balancing ones, and the break-even for comparison."""
+    """Lane's three limiting cutoffs, the midpoints between them, and the break-even for comparison.
+
+    NOT Lane's balancing cutoffs: those are where two capacities are exhausted at once, which needs the
+    deposit's grade-tonnage curve. This carries midpoints and says so in their names.
+    """
 
     break_even: float
     mine_limiting: float
     mill_limiting: float
     market_limiting: float
-    balancing_mine_mill: float
-    balancing_mill_market: float
+    midpoint_mine_mill: float
+    midpoint_mill_market: float
     opportunity_cost_per_period: float
     note: str = ""
 
@@ -323,8 +327,13 @@ def lane_cutoffs(
     # comparison entirely.
     mine_lim = break_even
     mill_lim = (processing_cost + opportunity / max(mill_capacity, 1e-9)) / margin
-    market_lim = (processing_cost + 0.0) / max(
-        margin - opportunity / max(market_capacity, 1e-9) / max(recovery, 1e-9), 1e-9
+    # Lane's market/refinery-limiting cutoff is g = h / (y (p - k - F/K)), which in this notation is
+    # h / (margin - recovery * F / K). Dividing by recovery instead of multiplying inflates the
+    # opportunity charge by 1/recovery**2: measured against the test's own parameters, +1.6 percent
+    # at a recovery of 0.88 and +113.8 percent at 0.30, and at those parameters this cutoff is also
+    # the median, so the reported optimum was wrong too.
+    market_lim = processing_cost / max(
+        margin - max(recovery, 0.0) * opportunity / max(market_capacity, 1e-9), 1e-9
     )
 
     return CutoffPolicy(
@@ -332,8 +341,13 @@ def lane_cutoffs(
         mine_limiting=float(mine_lim),
         mill_limiting=float(mill_lim),
         market_limiting=float(market_lim),
-        balancing_mine_mill=float(0.5 * (mine_lim + mill_lim)),
-        balancing_mill_market=float(0.5 * (mill_lim + market_lim)),
+        # NOT Lane's balancing cutoffs, and named so it cannot be mistaken for them. Lane's are the
+        # grades at which two capacities are exhausted at once, which is a property of the deposit's
+        # grade-tonnage curve; this function is given economics only and has no distribution to
+        # integrate. The midpoint is a usable interpolation between two limiting cutoffs and it is
+        # nothing more than that.
+        midpoint_mine_mill=float(0.5 * (mine_lim + mill_lim)),
+        midpoint_mill_market=float(0.5 * (mill_lim + market_lim)),
         opportunity_cost_per_period=float(opportunity),
         note=(
             "Lane 1988. The mine-limiting cutoff carries no processing opportunity cost because the "

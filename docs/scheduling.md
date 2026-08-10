@@ -260,7 +260,7 @@ answer off as an exact one.
 
 ### 9.5 Lane's cutoff-grade policy
 
-`refine.lane_cutoffs` computes the three limiting cutoffs and the balancing cutoffs between them. The
+`refine.lane_cutoffs` computes the three limiting cutoffs and the MIDPOINTS between them. The
 break-even cutoff makes a tonne pay for its own processing; Lane's point is that this is the wrong
 cutoff whenever a capacity binds, because a marginal tonne consumes a scarce hour and pushes every
 profitable tonne behind it further into the discount.
@@ -360,4 +360,19 @@ good dual vector; since `L(pi)` is a valid upper bound for every `pi`, ONE exact
 Measured on that twin: 15 iterations, 15 seconds, and BZ agrees with the critical multiplier
 algorithm to 1.3e-8 relative on a single resource. Two entirely different algorithms computing the
 same LP is the check that says both are right.
+
+### Two corrections to this section, both found by measurement (0.5.0)
+
+**The market-limiting cutoff was wrong by a factor of `1/recovery`.** Lane's is
+`g = h / (y (p - k - F/K))`, which in the notation here is `h / (margin - recovery * F / K)`. The code
+divided by recovery where Lane multiplies, inflating the opportunity charge by `1/recovery^2`:
++1.6 percent at a recovery of 0.88 and +113.8 percent at 0.30. At the parameters of the package's own
+test that cutoff is also the median, so `CutoffPolicy.optimum` returned the wrong number too.
+
+**The balancing cutoffs were midpoints, and are now named as such.** Lane's balancing cutoffs are the
+grades at which two capacities are exhausted at the same time, which is a property of the deposit's
+GRADE-TONNAGE CURVE. `lane_cutoffs` is given economics only and has no distribution to integrate, so
+it could never have computed them. The fields are `midpoint_mine_mill` and `midpoint_mill_market`
+now: an interpolation between two limiting cutoffs is a usable number, and calling it Lane's
+balancing cutoff was the part that was not true.
 
