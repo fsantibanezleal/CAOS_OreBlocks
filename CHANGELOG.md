@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.4.0] - 2026-08-10
+
+The joint bound now runs on a real deposit. It could not before, and the product said so rather than
+hiding it; this is the fix rather than a bigger budget.
+
+### Added
+- **`fastcut`: a compiled maximum-closure path.** The pure-Python Dinic is fine on a block model and
+  loses on a TIME-EXPANDED graph, which is where the Bienstock-Zuckerberg pricing problem lives: a
+  10,976-block deposit over ten periods is 109,760 nodes and 972,904 arcs.
+  `scipy.sparse.csgraph.maximum_flow` is compiled and takes INTEGER capacities, so node weights are
+  scaled and rounded UP, which makes the error one-sided: the reported value can only OVER-estimate
+  the true maximum closure, by at most `n / scale`. That direction is the safety argument, because
+  `L(pi)` bounds the optimum for every dual vector and a pricing solve that came in low would produce
+  a number that is not a bound.
+- **`solve_gpcp_lp` certifies its answer.** The rounded pricing is fast enough to SEARCH but its
+  slack on a time-expanded graph is about `1e-4` relative, the same order as the tightening the joint
+  bound exists to measure, so a bound built from it cannot answer the question it was asked. Since
+  `L(pi)` is valid for every `pi`, one EXACT solve at the best dual vector found turns the search
+  into a certificate: `pricing_slack` comes back at exactly `0.0` and the number is the real thing.
+  Measured on that twin: 15 iterations, 15 seconds, and BZ agrees with the critical multiplier
+  algorithm to 1.3e-8 relative on a single resource, which is the check that says both are right.
+- `solve_gpcp_lp(..., time_budget_s=...)`. BZ returns a valid upper bound at EVERY iteration, so a
+  run that stops early is looser rather than wrong, and `converged` says which one you got.
+- `BzResult` gains `pricing_slack`, `pricing_solver`, `certified` and `seconds`.
+
+### Measured, and written into the source
+- `scipy.sparse.csgraph.maximum_flow` accepts an int64 matrix and is WRONG above a total capacity of
+  `2**31`: on a closure whose true value is 769,925,542 it returns +3,210 at `2**30` (inside the
+  rounding slack, as designed) and +15,491,856 at `2**31`, which is the whole positive mass, meaning
+  the flow came back as zero. It does not raise and it does not warn. `test_fastcut.py` re-measures
+  the ceiling so a scipy release that moves it is caught here rather than in a bound that drifted.
+
 ## [0.3.1] - 2026-08-08
 
 ### Added

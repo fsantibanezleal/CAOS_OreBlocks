@@ -313,3 +313,51 @@ multiplier corrupts the optimism number the module exists to report).
 - **Minimum-production constraints** (`sense = 'G'`). The reader accepts them; the critical multiplier
   algorithm raises `NotImplementedError` rather than quietly solving a different problem.
 - **Stochastic scheduling.** Multi-realisation SIP is a different model. Cite it, do not claim it.
+
+## 10. Making the joint bound affordable (0.4.0)
+
+The Bienstock-Zuckerberg pricing problem lives on the TIME-EXPANDED graph: a 10,976-block deposit
+over ten periods is 109,760 nodes and 972,904 arcs. The package's pure-Python Dinic takes about two
+seconds per closure there, and BZ needs one per iteration, so the joint bound was simply not computed
+on any real deposit and the caller fell back to Algorithm 4's looser certified bound.
+
+### The compiled path, and why its arithmetic is safe
+
+`scipy.sparse.csgraph.maximum_flow` is compiled and takes INTEGER capacities. Scaling a float
+objective to integers is where a bound usually stops quietly being a bound, so the rounding here is
+DIRECTIONAL:
+
+$$w'_b \;=\; \frac{\lceil s\, w_b \rceil}{s} \;\ge\; w_b
+\qquad\Longrightarrow\qquad
+\max_{C\ \mathrm{closed}} \sum_{b \in C} w'_b \;\ge\; \max_{C\ \mathrm{closed}} \sum_{b \in C} w_b$$
+\max_{C 	ext{ closed}} \sum_{b \in C} w'_b \;\ge\; \max_{C} \sum_{b \in C} w_b$$
+
+so the computed value can only OVER-estimate, by at most `n / s`. That direction is the entire
+safety argument: the termination certificate is that `L(pi)` bounds the optimum for every dual
+vector `pi`, and a pricing solve that came in LOW would produce a number that is not a bound and
+nothing downstream could tell.
+
+### The measured ceiling
+
+`maximum_flow` accepts an int64 matrix and is WRONG above a total capacity of `2**31`. It does not
+raise and it does not warn. On a closure whose true value is 769,925,542 it returns +3,210 at
+`2**30`, inside the rounding slack as designed, and +15,491,856 at `2**31`, which is the entire
+positive mass, meaning the flow came back as essentially zero. The module uses one power of two
+below the observed failure and a test re-measures it, so a scipy release that moves the boundary is
+caught in a test that names it rather than in a bound that drifted.
+
+### Search fast, certify exactly
+
+At that ceiling the slack is about `1e-4` relative on a time-expanded graph, which is the same order
+as the tightening the joint bound exists to measure. A bound built from it therefore cannot answer
+the question it was asked, and the first measurement showed exactly that: BZ came out ABOVE Algorithm
+4 on a single-resource instance, a negative tightening, entirely inside the slack.
+
+The fix is not more precision, it is the right division of labour. The rounded solves SEARCH for a
+good dual vector; since `L(pi)` is a valid upper bound for every `pi`, ONE exact solve at the best
+`pi` found turns the search into a certificate. `pricing_slack` comes back at exactly `0.0`.
+
+Measured on that twin: 15 iterations, 15 seconds, and BZ agrees with the critical multiplier
+algorithm to 1.3e-8 relative on a single resource. Two entirely different algorithms computing the
+same LP is the check that says both are right.
+

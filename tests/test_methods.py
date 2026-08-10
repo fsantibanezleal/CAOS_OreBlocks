@@ -68,7 +68,12 @@ def test_bz_terminates_on_its_certificate_not_on_an_iteration_cap():
     twin, inst = _instance(n_res=2)
     bz = ob.cpit_bz_bound(inst, twin.precedence, max_iter=200)
     assert bz.converged, "BZ hit the iteration cap instead of proving optimality"
-    assert bz.pricing_solves == bz.iterations
+    # one pricing solve per iteration, plus the CERTIFICATION solve when the compiled path priced
+    # the columns: those solves round their capacities, so the reported bound is re-derived once,
+    # exactly, at the best dual vector found. `pricing_slack == 0` is the claim that it happened.
+    extra = 1 if bz.pricing_solver == "scipy-maxflow" else 0
+    assert bz.pricing_solves == bz.iterations + extra
+    assert bz.pricing_slack == 0.0
 
 
 # ------------------------------------------------------------------------------------------------
