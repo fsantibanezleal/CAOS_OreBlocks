@@ -100,6 +100,21 @@ def _neighbourhood(
     return np.array(sorted(out), dtype=np.int64)
 
 
+def _solver_options(time_limit: float | None, mip_gap: float) -> dict:
+    """Solver options, with the wall clock OMITTED when the caller asks for determinism.
+
+    A time limit makes the answer depend on the machine and its load. That is the right trade for an
+    interactive call and the wrong one for a bake whose artifacts are committed as evidence: a
+    downstream product found its headline gap was not reproducible from (params, seed) because this
+    rung was the reported best on nine cases of thirteen. `time_limit=None` stops on the relative MIP
+    gap alone, which is a property of the problem and lands in the same place everywhere.
+    """
+    options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
+    if time_limit is not None:
+        options["time_limit"] = time_limit
+    return options
+
+
 def exact_local_search(
     inst: Cpit,
     prec: Precedence,
@@ -108,7 +123,7 @@ def exact_local_search(
     d_max: int = 220,
     rounds: int = 24,
     seed: int = 7,
-    time_limit: float = 20.0,
+    time_limit: float | None = 20.0,
     mip_gap: float = 1e-5,
 ) -> ScheduleResult:
     """Chicoisne et al. section 3.3: re-solve a restricted C-PIT EXACTLY, repeatedly.
@@ -214,7 +229,7 @@ def exact_local_search(
                 constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
                 integrality=np.ones(n_var),
                 bounds=(0, 1),
-                options={"time_limit": time_limit, "mip_rel_gap": mip_gap, "presolve": True},
+                options=_solver_options(time_limit, mip_gap),
             )
         except Exception:  # noqa: BLE001 - a solver failure must never lose the incumbent
             continue
