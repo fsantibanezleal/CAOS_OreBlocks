@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-08-10
+
+### Added
+- **`exact_local_search(..., time_limit=None)`**: stop on the relative MIP gap alone. A wall-clock
+  budget makes the answer depend on the machine and its load, which is the right trade for an
+  interactive call and the wrong one for a bake whose artifacts are committed as evidence. A
+  downstream product found its headline gap was not reproducible from `(params, seed)` because this
+  rung is the reported best on nine cases of thirteen and was stopping on eight seconds of CPU. The
+  option is now omitted from the solver call rather than passed as `None`, and a test asserts two
+  runs agree block for block.
+
 ## [0.4.0] - 2026-08-10
 
 The joint bound now runs on a real deposit. It could not before, and the product said so rather than

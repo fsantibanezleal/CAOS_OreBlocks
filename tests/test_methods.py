@@ -334,3 +334,25 @@ def test_expected_weight_is_rejected_without_the_bound() -> None:
     twin, inst = _instance()
     with pytest.raises(ValueError, match="needs the LP relaxation"):
         ob.solve_cpit(inst, twin.precedence, method="expected", bound=False)
+
+
+def test_the_exact_local_search_can_be_asked_for_a_deterministic_stop() -> None:
+    """A wall-clock budget makes the answer depend on the machine, which a committed bake cannot.
+
+    A downstream product found its headline gap was not reproducible from (params, seed) because this
+    rung, the reported best on nine cases of thirteen, stopped on eight seconds of CPU. `time_limit`
+    of None drops the option entirely and stops on the relative MIP gap, which is a property of the
+    problem.
+    """
+    from oreblocks.refine import _solver_options
+
+    assert "time_limit" not in _solver_options(None, 1e-4)
+    assert _solver_options(8.0, 1e-5)["time_limit"] == 8.0
+
+    twin, inst = _instance(n_res=2)
+    seed = ob.toposort_schedule(inst, twin.precedence, weight="greedy")
+    a = ob.exact_local_search(inst, twin.precedence, seed, d_max=40, rounds=2, time_limit=None)
+    b = ob.exact_local_search(inst, twin.precedence, seed, d_max=40, rounds=2, time_limit=None)
+    assert a.npv == pytest.approx(b.npv, rel=1e-12)
+    assert np.array_equal(a.period_of_block, b.period_of_block)
+    assert a.npv >= seed.npv - 1e-9
