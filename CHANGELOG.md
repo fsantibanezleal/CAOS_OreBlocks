@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0] - 2026-08-10
+
+### Changed
+- **`sliding_window_schedule` is now a sliding time window.** It was not one. The previous version
+  scheduled each window with the same greedy TopoSort the SOTA rung uses, then undid every placement
+  past the frozen prefix and returned its capacity; since a placement consumes only its own period's
+  capacity, nothing inside the window could influence the prefix. Measured: `window` of 1, 2, 3, 5, 8
+  and T gave BIT-IDENTICAL schedules on three instances, zero blocks moved. The rung carried
+  Cullenbine, Wood and Newman (doi:10.1007/s11590-011-0306-2) for a look-ahead it did not perform.
+
+  It now solves each window JOINTLY as an integer program, with everything past the window aggregated
+  into one optimistic tail, so a block worth taking in period 1 only because of what it unlocks in
+  period 3 is visible to the solver. Cumulative variables, so precedence is one row of two entries per
+  arc per slot: written with per-slot assignment variables the matrix grew quadratically in the window
+  and one slide took ninety seconds. Measured on a 1008-block twin, window 3 against window 1: 186
+  blocks move and NPV rises 4.2 percent. It needs scipy (`oreblocks[milp]`).
+
+  Two approximations, both named in the docstring and in the result's notes: the tail is optimistic
+  (its discount factor is that of the first tail period), and the candidate set is sized by TONNAGE to
+  cover `cover` times the window's capacity.
+
+- **It REFUSES to be starved.** If the candidate set needed to fill a period's capacity exceeds
+  `cand_max`, it raises with both numbers instead of returning a schedule. A flat cap of 150 blocks
+  cut the objective from 39.7 M to 10.4 M on a 1008-block twin, and a silent cap on a 14,400-block one
+  mined 550 blocks and reported an NPV for it. A starved answer still looks like a schedule.
+
+### Added
+- Tests: the window must CHANGE the schedule, any loss against no look-ahead must be inside the
+  per-slide MIP gap (it loses 0.012 percent on one instance and wins 4.2 percent on another, which is
+  the honest property of a heuristic with an optimistic tail), and the starvation guard must raise.
+
 ## [0.4.1] - 2026-08-10
 
 ### Added

@@ -356,3 +356,39 @@ def test_the_exact_local_search_can_be_asked_for_a_deterministic_stop() -> None:
     assert a.npv == pytest.approx(b.npv, rel=1e-12)
     assert np.array_equal(a.period_of_block, b.period_of_block)
     assert a.npv >= seed.npv - 1e-9
+
+
+def test_the_sliding_window_actually_looks_ahead() -> None:
+    """The `window` argument must change the answer, or the citation is doing the work.
+
+    The first implementation scheduled each window greedily and then undid every placement past the
+    frozen prefix, returning its capacity. Nothing inside the window could influence the prefix, so
+    `window` of 1, 2, 3, 5, 8 and T gave bit-identical schedules on every instance tried, and the rung
+    shipped as "Cullenbine, Wood and Newman, the industrial baseline" while being a one-period greedy.
+    """
+    twin, inst = _instance(n_res=2)
+    prec = twin.precedence
+    one = ob.sliding_window_schedule(inst, prec, window=1, fix=1, cand_max=1500, mip_gap=3e-2)
+    three = ob.sliding_window_schedule(inst, prec, window=3, fix=1, cand_max=1500, mip_gap=3e-2)
+
+    moved = int((one.period_of_block != three.period_of_block).sum())
+    assert moved > 0, "the window changed nothing, so it is not a sliding time window"
+
+    # It may LOSE, and that is a property of the method rather than a bug: the tail is optimistic and
+    # each slide stops on a 3 percent MIP gap, so a longer window can trade a real gain for a tail
+    # that was never going to happen. Measured here it loses by 0.012 percent; on a 1008-block twin
+    # with the same settings it wins by 4.2 percent. What must hold is that any loss is inside the
+    # per-slide gap, or the look-ahead is not doing what it claims.
+    assert three.npv >= one.npv * (1 - 3e-2), (
+        f"the look-ahead lost {100 * (1 - three.npv / one.npv):.2f} percent, "
+        "more than the per-slide MIP gap explains"
+    )
+
+
+def test_the_sliding_window_refuses_to_be_starved() -> None:
+    """A candidate set too small to fill a period's capacity gives a schedule that mines almost
+    nothing. It must raise rather than return that, because a starved answer still looks like a
+    schedule: on a 14,400-block model a silent cap mined 550 blocks and reported an NPV for it."""
+    twin, inst = _instance(n_res=2)
+    with pytest.raises(ValueError, match="candidate blocks"):
+        ob.sliding_window_schedule(inst, twin.precedence, window=3, fix=1, cand_max=8)
