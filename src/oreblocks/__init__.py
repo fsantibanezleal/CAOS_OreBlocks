@@ -12,7 +12,7 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
