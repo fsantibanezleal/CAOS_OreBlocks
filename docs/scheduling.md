@@ -327,8 +327,9 @@ on any real deposit and the caller fell back to Algorithm 4's looser certified b
 objective to integers is where a bound usually stops quietly being a bound, so the rounding here is
 DIRECTIONAL:
 
-$$w'_b = rac{\lceil s\, w_b ceil}{s} \;\ge\; w_b
-\quad\Longrightarrow\quad
+$$w'_b \;=\; \frac{\lceil s\, w_b \rceil}{s} \;\ge\; w_b
+\qquad\Longrightarrow\qquad
+\max_{C\ \mathrm{closed}} \sum_{b \in C} w'_b \;\ge\; \max_{C\ \mathrm{closed}} \sum_{b \in C} w_b$$
 \max_{C 	ext{ closed}} \sum_{b \in C} w'_b \;\ge\; \max_{C} \sum_{b \in C} w_b$$
 
 so the computed value can only OVER-estimate, by at most `n / s`. That direction is the entire
