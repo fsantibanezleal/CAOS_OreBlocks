@@ -26,6 +26,42 @@
   backgroundcolor=\color{gray!6}, aboveskip=6pt, belowskip=4pt,
 }
 
+% IEEEtran hard-codes an em-dash after the abstract and index-terms names; the CAOS
+% content standard (ADR-0067) excludes em-dashes, so the separator is a full stop.
+\makeatletter
+\def\abstract{\normalfont
+    \if@twocolumn
+      \@IEEEabskeysecsize\bfseries\textit{\abstractname}.\ \relax
+    \else
+      \bgroup\par\addvspace{0.5\baselineskip}\centering\vspace{-1.78ex}\@IEEEabskeysecsize\textbf{\abstractname}\par\addvspace{0.5\baselineskip}\egroup\quotation\@IEEEabskeysecsize
+    \fi\@IEEEgobbleleadPARNLSP}
+\def\IEEEkeywords{\normalfont
+    \if@twocolumn
+      \@IEEEabskeysecsize\bfseries\textit{\IEEEkeywordsname}.\ \relax
+    \else
+      \bgroup\par\addvspace{0.5\baselineskip}\centering\@IEEEabskeysecsize\textbf{\IEEEkeywordsname}\par\addvspace{0.5\baselineskip}\egroup\quotation\@IEEEabskeysecsize
+    \fi\@IEEEgobbleleadPARNLSP}
+\makeatother
+
+% Page-1 header block (conventions/manuscript-header-standard.md). The four document
+% macros are set by the publishing tool when the version DOI is reserved.
+\newcommand{\doctype}{Technical note}
+\newcommand{\docversion}{v1.1}
+\newcommand{\docdate}{18 September 2026}
+\newcommand{\versiondoi}{10.5281/zenodo.22822558}
+\newcommand{\conceptdoi}{10.5281/zenodo.21512088}
+\newcommand{\docrepo}{github.com/fsantibanezleal/CAOS\_OreBlocks}
+\newcommand{\headerblock}{%
+\begin{center}
+\fbox{\parbox{0.94\textwidth}{\small\raggedright
+\textbf{\doctype} \quad$\cdot$\quad \docversion, \docdate \quad$\cdot$\quad Licence CC BY 4.0\\[2pt]
+CAOS open-research programme \quad$\cdot$\quad CAOS\_OreBlocks, the \texttt{oreblocks} synthetic block-model package\\[2pt]
+Version DOI \href{https://doi.org/\versiondoi}{\texttt{\versiondoi}} \quad$\cdot$\quad
+concept DOI (always latest) \href{https://doi.org/\conceptdoi}{\texttt{\conceptdoi}}\\[2pt]
+Not peer reviewed. Source code, data and computational records: \href{https://\docrepo}{\texttt{\docrepo}}
+}}
+\end{center}}
+
 \begin{document}
 
 \title{oreblocks: License-Free Synthetic Ore-Body\\ Block Models with a Stamped Exact\\ Ultimate-Pit Optimum}
@@ -33,11 +69,13 @@
 \author{Felipe~Santiba\~nez-Leal~\orcidlink{0000-0002-0150-3246}%
 \thanks{F. Santiba\~nez-Leal is with the CAOS open-research programme, Santiago, Chile
 (e-mail: fsantibanez@gmail.com; ORCID 0000-0002-0150-3246).}%
-\thanks{Software note, 2026. Package \texttt{oreblocks}; source (MIT) at
+\thanks{Package \texttt{oreblocks}; source code under the MIT license at
 \url{https://github.com/fsantibanezleal/CAOS_OreBlocks}.}}
 
-\markboth{Software Note, 2026}%
+\markboth{\doctype\ \docversion, 2026 \textperiodcentered\ CAOS open-research programme}%
 {Santiba\~nez-Leal: oreblocks, license-free synthetic ore-body block models with a stamped exact ultimate pit}
+
+\IEEEaftertitletext{\vspace{-0.6\baselineskip}\headerblock\vspace{0.2\baselineskip}}
 
 \maketitle
 
@@ -52,11 +90,11 @@ optimum. The optimum is computed by the classical reduction of the ultimate-pit 
 thence to a minimum $s$--$t$ cut (Picard's theorem), solved by a Dinic max-flow with self-verifying closure and
 value-identity checks, and every instance is emitted in exact MineLib \texttt{.blocks}/\texttt{.prec}/\texttt{.upit}
 format with a sidecar carrying the stamped optimum, so any solver can be validated against a
-known-by-construction answer without touching licensed data. We validate the solver \emph{independently} here:
+known-by-construction answer without touching licensed data. We validate the solver \emph{independently}:
 on all four deposit archetypes its pit value agrees with a totally-unimodular linear program solved by a separate
 method (SciPy HiGHS) to relative $10^{-15}$, i.e. to machine precision, and the exact solve runs in under a
 second up to $32{,}000$ blocks. The package is deterministic, MIT-licensed, and consumed by downstream pit,
-dispatch and haulage tools; every number and figure in this note regenerates from the committed artifacts.
+dispatch and haulage tools; every reported number regenerates from the archived validation run.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -79,7 +117,7 @@ tested against it.
 
 The obstacle is data. The community's shared benchmark, MineLib~\cite{minelib}, collects real and realistic
 instances with published optima, but its instances are granted for academic download only and may not be
-redistributed; real mine block models are proprietary. A developer who wants to ship a reproducible test suite, a
+redistributed; real mine block models are proprietary. A developer who wants to distribute a reproducible test suite, a
 teaching notebook a student can run, or a continuous-integration job that certifies a solver against a known
 answer, cannot bundle MineLib data and cannot use a real mine. What is missing is a way to \emph{generate}
 instances of the same nature, with a known optimum, under a permissive license.
@@ -89,8 +127,8 @@ block models from four geological archetypes, with per-block grades, bench struc
 net-value economics; (ii) solves each instance's ultimate pit \emph{exactly} by the maximum-closure/min-cut
 reduction; and (iii) writes the instance in exact MineLib format with a sidecar carrying the stamped optimum, so
 any downstream solver can be validated against a known-by-construction answer. Everything is deterministic given
-a seed and every instance is clearly labelled synthetic. The one thing a synthetic benchmark must earn is trust
-in its stamped answer, so we validate the solver \emph{independently} (Section~\ref{sec:validation}) against a
+a seed and every instance is clearly labelled synthetic. A synthetic benchmark is useful only if its stamped
+answer is correct, so we validate the solver \emph{independently} (Section~\ref{sec:validation}) against a
 linear program solved by an entirely different method, finding agreement to machine precision.
 
 \section{Statement of Need}\label{sec:need}
@@ -155,28 +193,28 @@ synthetic benchmark needs, where a plain exact max-flow is more than fast enough
 
 \section{Validation}\label{sec:validation}
 
-\begin{figure}[!t]
+\begin{figure*}[!t]
 \centering
-\includegraphics[width=0.99\columnwidth]{fig-scaling.pdf}
-\caption{Solver validation, from the committed run. \textbf{(a)} Independent cross-check: on every archetype the
-max-closure pit value agrees with the same instance solved as a linear program by SciPy HiGHS (an entirely
-different algorithm) to relative $\sim\!10^{-15}$, machine precision (dashed line). \textbf{(b)} The exact solve
-scales sub-second: $0.02$~s at $2{,}048$ blocks to $0.92$~s at $32{,}000$ blocks.}
+\includegraphics[width=0.78\textwidth]{fig-scaling.pdf}
+\caption{Solver validation, from the archived validation run. \textbf{(a)} Independent cross-check: on every
+archetype the max-closure pit value agrees with the same instance solved as a linear program by SciPy HiGHS (an
+entirely different algorithm) to relative $\sim\!10^{-15}$, machine precision (dashed line). \textbf{(b)} The
+exact solve scales sub-second: $0.02$~s at $2{,}048$ blocks to $0.92$~s at $32{,}000$ blocks.}
 \label{fig:scaling}
-\end{figure}
+\end{figure*}
 
-\begin{figure}[!t]
+\begin{figure*}[!t]
 \centering
-\includegraphics[width=0.99\columnwidth]{fig-pit.pdf}
+\includegraphics[width=0.72\textwidth]{fig-pit.pdf}
 \caption{A vertical cross-section of a porphyry twin: the grade field (the buried high-grade shell) with the
 exact ultimate-pit boundary overlaid. The pit is a slope-feasible bowl whose walls step down bench by bench (the
 discrete slope precedence), bottoming under the high-grade core, exactly the structure a real pit optimiser must
 reproduce.}
 \label{fig:pit}
-\end{figure}
+\end{figure*}
 
-A synthetic benchmark is only as trustworthy as its stamped answer, so we do not merely assert the solver is
-correct, we check it against an independent method. The ultimate-pit problem also has a linear-programming
+A synthetic benchmark is only as reliable as its stamped answer, so we check the solver against an independent
+method. The ultimate-pit problem also has a linear-programming
 formulation: maximise $\sum_b v_b x_b$ subject to $x_b \le x_p$ for every precedence relation and $0\le x_b\le
 1$. Its constraint matrix is a network (incidence) matrix and hence totally unimodular, so the LP relaxation is
 integral and its optimum equals the exact ultimate-pit value. We solve this LP with SciPy's HiGHS backend, a
@@ -191,8 +229,8 @@ independent cross-check against a separate min-cut engine that reproduces the pu
 The exact solve is fast (Fig.~\ref{fig:scaling}b): from $0.02$~s at $2{,}048$ blocks to $0.92$~s at $32{,}000$
 blocks, comfortably within the range a synthetic benchmark occupies. Table~\ref{tab:archetypes} lists the stamped
 optima of the four archetypes at a common size, each with the solver's own value-identity gap (the residual of
-the identity above), which sits at $10^{-7}$ or below, confirming the internal consistency of every stamped
-answer. Figure~\ref{fig:pit} shows what an instance looks like: a porphyry cross-section with its exact pit, a
+the identity above), which is at most $2.4\times10^{-7}$, a relative residual of order $10^{-16}$ of the pit
+value (double-precision round-off), confirming the internal consistency of every stamped answer. Figure~\ref{fig:pit} shows what an instance looks like: a porphyry cross-section with its exact pit, a
 slope-feasible bowl that steps down bench by bench to the high-grade core.
 
 \begin{table}[!t]
@@ -223,53 +261,60 @@ coordinates and attributes, \texttt{.prec} the precedence in the compressed-spar
 block count), so a solver under test reads the instance, computes its own pit, and compares against the stamped
 answer with no licensed data anywhere in the loop. A whole instance with its certified optimum is one call:
 
+\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}[language=Python]
 from oreblocks import make_twin
-tw = make_twin("porphyry", dims=(20,20,10), seed=42)
-tw.upit.pit_value, tw.upit.n_in_pit   # the exact optimum, stamped
-tw.write("out/")   # -> .blocks / .prec / .upit / .meta.json
+tw = make_twin("porphyry", dims=(20,20,10),
+               seed=42)
+# the exact optimum, stamped
+tw.upit.pit_value, tw.upit.n_in_pit
+# -> .blocks / .prec / .upit / .meta.json
+tw.write("out/")
 \end{lstlisting}
+\end{minipage}
 
 \section{Architecture and Availability}\label{sec:arch}
 
-The package is small pure-Python modules (\texttt{grid}, \texttt{fields}, \texttt{economics},
+{\raggedright\parindent=1em
+The package consists of small pure-Python modules (\texttt{grid}, \texttt{fields}, \texttt{economics},
 \texttt{precedence}, \texttt{upit}, \texttt{minelib\_io}, \texttt{twins}) over NumPy storage, with no compiled
 dependency, so it installs and runs anywhere Python does. It is deterministic given a seed, unit-tested (the
 generators, the precedence, the solver's closure and identity checks, the MineLib round-trip), and MIT-licensed.
 The downstream CAOS tools (a haulage simulator, a pit-forge twin generator, a dispatch bench) consume it for
-geology-grounded, license-free instances. Source and the reproducible validation of this note are at
-\url{https://github.com/fsantibanezleal/CAOS_OreBlocks}.
+geology-grounded, license-free instances. Source code and the reproducible validation are available at
+\url{https://github.com/fsantibanezleal/CAOS_OreBlocks}.\par}
 
 \section{Limitations}\label{sec:limits}
 
-The scope is honest. \texttt{oreblocks} generates instances of the \emph{ultimate-pit} problem (the single-period
+\texttt{oreblocks} generates instances of the \emph{ultimate-pit} problem (the single-period
 pit limit), not the constrained production-scheduling problem (CPIT/PCPSP) with capacities and time
 periods~\cite{minelib}; those are a different, harder class. The deposits are geologically plausible synthetic
 fields, not calibrated to any real ore body, and are labelled synthetic throughout. The economics is a standard
 single-metal mine-vs-process model; multi-element or blending economics would need extension. The exact solver
 targets the $10^3$--$10^5$-block range a benchmark generator occupies; for the multi-million-block industrial
 models the specialised pseudoflow implementations~\cite{hochbaum} are the tool of choice, and \texttt{oreblocks}
-writes MineLib format precisely so such solvers can consume its instances. None of these is hidden: the package
-labels every instance synthetic and states what its stamped optimum does and does not certify.
+writes MineLib format precisely so such solvers can consume its instances. The package labels every instance
+synthetic and states what its stamped optimum does and does not certify.
 
 \section{Conclusion}
 
 \texttt{oreblocks} turns the shortage of redistributable ore-body benchmarks into a generator: seeded, synthetic,
 geologically-structured block models of the MineLib nature, each stamped with its exact ultimate-pit optimum by
 the classical max-closure/min-cut solve, emitted in MineLib format with the answer in a sidecar. The stamped
-answer is trustworthy because it is checked, here, against an independent linear program to machine precision.
+answer is checked against an independent linear program, with agreement to machine precision.
 The value is a license-free, reproducible source of realistic pit-optimisation instances with certified optima,
 for testing solvers, grounding simulators, and teaching, without touching licensed data.
 
 \appendices
 \section{Reproduction}\label{app:repro}
 
-The validation is \texttt{manuscripts/ore-body-twins/figures/upit\_validation.py}: it builds each archetype,
+{\raggedright\parindent=1em
+The validation is \path{manuscripts/ore-body-twins/figures/upit_validation.py}: it builds each archetype,
 solves the ultimate pit by the package's max-closure solver and independently as a HiGHS linear program, records
 the agreement, the four stamped optima and the solve-time scaling, and extracts a porphyry cross-section. The
 figure script reads those artifacts; the max-closure schematic is a hand-authored theme-aware drawing. Re-running
 reproduces the cross-check ($10^{-15}$ agreement), Table~\ref{tab:archetypes}, and
-Figs.~\ref{fig:scaling}--\ref{fig:pit}; the package is seeded and deterministic.
+Figs.~\ref{fig:scaling}--\ref{fig:pit}; the package is seeded and deterministic.\par}
 
 \balance
 
