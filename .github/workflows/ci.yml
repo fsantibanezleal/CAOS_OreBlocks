@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main, develop]
-  pull_request:
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -14,6 +16,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +32,7 @@ jobs:
 
   guards:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Repo-integrity guards
@@ -42,3 +46,5 @@ jobs:
             echo "::error::leaked local machine path"; fail=1; fi
           if [ "$fail" -eq 0 ]; then echo "guards OK"; fi
           exit $fail
+      - name: CI budget, trunk-only triggers, no training (ADR-0074)
+        run: python3 scripts/check_ci_budget.py
