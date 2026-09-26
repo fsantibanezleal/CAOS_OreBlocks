@@ -1,4 +1,4 @@
-"""oreblocks test suite — closed-form oracle, determinism, IO round-trips, twin e2e."""
+"""oreblocks test suite, closed-form oracle, determinism, IO round-trips, twin e2e."""
 
 from __future__ import annotations
 

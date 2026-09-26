@@ -1,6 +1,6 @@
 name: Publish to PyPI
 
-# Fires on a GitHub Release (tag vX.XX.XXX). Uses PyPI Trusted Publishing (OIDC) — no stored token.
+# Fires on a GitHub Release (tag vX.XX.XXX). Uses PyPI Trusted Publishing (OIDC): no stored token.
 # Requires the pending publisher registered on PyPI: project oreblocks, owner fsantibanezleal,
 # repo CAOS_OreBlocks, workflow publish-pypi.yml, environment pypi.
 on:

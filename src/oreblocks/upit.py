@@ -1,4 +1,4 @@
-"""Exact ultimate-pit (UPIT) solve — Picard's max-closure -> min-cut reduction on Dinic max-flow.
+"""Exact ultimate-pit (UPIT) solve, Picard's max-closure -> min-cut reduction on Dinic max-flow.
 
 The maximum-value closed set of the precedence DAG (mine a block only if everything above it is
 mined) is, by Picard (1976), the source side of a minimum s-t cut:
@@ -8,7 +8,7 @@ mined) is, by Picard (1976), the source side of a minimum s-t cut:
 - block  -> predecessor with capacity INF  for every precedence arc
 
 After max-flow the blocks reachable from the source in the residual graph are the optimal pit and
-``pit_value = sum(positive values) - maxflow`` (asserted). Pure Python + numpy storage — exact and
+``pit_value = sum(positive values) - maxflow`` (asserted). Pure Python + numpy storage, exact and
 deterministic; fine for the 1e3..1e5-block instances oreblocks targets (newman1-size in well under
 a second, kd-size in seconds). This mirrors the verified CAOS PitForge engine that reproduces the
 published MineLib optima.
@@ -37,7 +37,7 @@ class UpitResult:
 
 
 class _Dinic:
-    """Adjacency-list Dinic on Python lists — exact float capacities, EPS-guarded residuals."""
+    """Adjacency-list Dinic on Python lists, exact float capacities, EPS-guarded residuals."""
 
     def __init__(self, n: int) -> None:
         self.n = n

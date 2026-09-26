@@ -1,4 +1,4 @@
-"""Slope precedence — which blocks must be removed ABOVE a block before it can be mined.
+"""Slope precedence, which blocks must be removed ABOVE a block before it can be mined.
 
 A pit wall stands at the overall slope angle θ (from horizontal). On a regular grid this is the
 standard reduced pattern: arcs only to the (2rx+1)x(2ry+1) box one level ABOVE (level + 1, since
