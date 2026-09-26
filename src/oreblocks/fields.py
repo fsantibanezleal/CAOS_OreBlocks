@@ -1,15 +1,15 @@
-"""Seeded synthetic deposits — geostatistically plausible grade fields on a block grid.
+"""Seeded synthetic deposits, geostatistically plausible grade fields on a block grid.
 
 Clearly SYNTHETIC (no real drillholes), but built the way real deposits are described: a
 deterministic grade trend (the geological shape) plus spatially-correlated noise (a box-smoothed
 white field standing in for a variogram range), so downstream optimisers face non-trivial
-ore/waste and slope trade-offs. Everything is seeded — byte-identical given (archetype, dims,
+ore/waste and slope trade-offs. Everything is seeded, byte-identical given (archetype, dims,
 seed). The four archetypes mirror the CAOS PitForge teaching set:
 
-- ``porphyry``  — a buried ellipsoidal high-grade shell (broad bowl pits)
-- ``vein``      — a dipping tabular zone (narrow steep pits)
-- ``layered``   — horizontal stratabound bands
-- ``core_halo`` — a rich core inside a broad low-grade halo
+- ``porphyry`` : a buried ellipsoidal high-grade shell (broad bowl pits)
+- ``vein``     : a dipping tabular zone (narrow steep pits)
+- ``layered``  : horizontal stratabound bands
+- ``core_halo``: a rich core inside a broad low-grade halo
 
 Levels increase UPWARD (grid convention); the trend functions are written in depth fractions so
 the shapes match their depth-down originals exactly.

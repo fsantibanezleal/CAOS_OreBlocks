@@ -1,4 +1,4 @@
-"""oreblocks — synthetic 3-D ore-body block models of the MineLib nature, and their scheduling.
+"""oreblocks, synthetic 3-D ore-body block models of the MineLib nature, and their scheduling.
 
 Seeded deposit archetypes with per-block grades, bench (level) structure, slope precedence, UPIT
 economics with per-block optimal destination, an exact max-closure solver, extraction states with
@@ -12,7 +12,7 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.2] - 2026-09-26
+
+Display version `0.05.002` (`VERSION`; the CAOS format is `X.XX.XXX` with the PEP 440 form in
+`pyproject.toml`). Tags follow `vX.XX.XXX` from this release on; the earlier `v0.1.0` to `v0.5.1` tags
+stay as the record of those releases.
+
+### Changed
+- No em-dash in the package's docstrings, comments, docs and workflow (ADR-0067); the archetype's
+  `scripts/check_content_standards.py` runs in CI.
+- A `VERSION` file names the display version; nothing in the API changes.
+
 ## [0.5.1] - 2026-08-10
 
 ### Fixed
@@ -226,15 +237,15 @@ and produce feasible schedules against it.
   constraints, minimum-production (`sense = 'G'`) constraints, the exact `C-PIT[D]` local search,
   and stochastic scheduling.
 
-## [0.1.0] — 2026-07-03
+## [0.1.0]: 2026-07-03
 
 Initial release.
 
 ### Added
 - `BlockGrid` (MineLib level convention: z up), seeded named RNG streams.
-- Deposit archetypes `porphyry / vein / layered / core_halo` — trend + box-smoothed correlated
+- Deposit archetypes `porphyry / vein / layered / core_halo`: trend + box-smoothed correlated
   noise, mass-fraction grades, deterministic per (archetype, dims, seed).
-- UPIT economics (`Econ`, `block_values`): net value at the per-block optimal destination —
+- UPIT economics (`Econ`, `block_values`): net value at the per-block optimal destination, 
   the `.upit` semantics (max of waste/ore destinations, floating cutoff).
 - Slope precedence (`build_precedence`): reduced one-level-up template (rx = round(dz/(dx·tanθ)),
   clamped ≥ 1), CSR layout matching `.prec` semantics.

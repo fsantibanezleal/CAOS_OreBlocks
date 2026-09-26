@@ -10,7 +10,7 @@ Ultimate-Pit Optimum"*, concept DOI [10.5281/zenodo.21512088](https://doi.org/10
 [`manuscripts/ore-body-twins/`](manuscripts/ore-body-twins/)). It gives the deposit archetypes, the exact
 max-closure ultimate-pit solver, and an independent LP cross-check to machine precision (~1e-15).
 
-**Synthetic 3-D ore-body block models of the MineLib nature, and their scheduling** — seeded deposit
+**Synthetic 3-D ore-body block models of the MineLib nature, and their scheduling**, seeded deposit
 archetypes with per-block grades, bench (level) structure, slope precedence, UPIT economics with
 per-block optimal destination, an **exact max-closure solver**, extraction states with **loading
 faces**, MineLib `.blocks/.prec/.upit/.cpit/.pcpsp` **read/write**, the **certified CPIT LP bound**
@@ -18,8 +18,8 @@ by the critical multiplier algorithm, the **TopoSort** rounding heuristics, and 
 metrics. Deterministic given a seed; every generated instance is clearly labelled SYNTHETIC.
 
 Why: per-block ground truth on real mines is licensed or proprietary (MineLib grants academic
-download only, no redistribution). oreblocks generates instances of the same *nature* — 3-D
-benches, grades, precedence, net values — with a **stamped exact optimum**, so solvers, dispatch
+download only, no redistribution). oreblocks generates instances of the same *nature*, 3-D
+benches, grades, precedence, net values, with a **stamped exact optimum**, so solvers, dispatch
 simulators and teaching apps get license-free realistic instances with known-by-construction
 answers.
 
@@ -29,7 +29,7 @@ answers.
 pip install oreblocks
 ```
 
-## Quickstart — a MineLib-format twin with a stamped optimum
+## Quickstart: a MineLib-format twin with a stamped optimum
 
 ```python
 from oreblocks import make_twin
@@ -84,12 +84,12 @@ scheduling): **[docs/scheduling.md](docs/scheduling.md)**.
 | `Econ` / `block_values` | UPIT net value at the optimal destination (floating cutoff = the max) |
 | `build_precedence` | slope-cone template one level up (45° cubic → the classic 9-point), CSR |
 | `solve_upit` | exact Picard max-closure → Dinic min-cut; closure + value-identity self-checks |
-| `extraction_state` / `loading_faces` | top-down bench extraction + seeded k-means shovel faces (grade at face, ore fraction, tonnes) — the bridge to haulage simulators |
+| `extraction_state` / `loading_faces` | top-down bench extraction + seeded k-means shovel faces (grade at face, ore fraction, tonnes), the bridge to haulage simulators |
 | `write_minelib` / `read_*` | the `.blocks/.prec/.upit` triplet + a meta sidecar with the stamped optimum |
 
 ## Convention notes
 
-- Levels (z) increase **upward**: level 0 is the deepest bench — exactly how published MineLib
+- Levels (z) increase **upward**: level 0 is the deepest bench: exactly how published MineLib
   instances index (verified against newman1). Depth-down viewers flip with `z_down = nz-1-level`.
 - `.blocks` free columns written by oreblocks are documented in the meta sidecar:
   `grade (mass fraction) · tonnage (t) · density (t/m³)`.
@@ -97,8 +97,8 @@ scheduling): **[docs/scheduling.md](docs/scheduling.md)**.
 
 ## Used by
 
-- **minehaulsim** (haulage DES) — geology-grounded scenarios: loading faces with grade/bench.
-- **CAOS PitForge** — license-free synthetic twins next to the published-instance lane.
+- **minehaulsim** (haulage DES): geology-grounded scenarios: loading faces with grade/bench.
+- **CAOS PitForge**: license-free synthetic twins next to the published-instance lane.
 
 ## License
 

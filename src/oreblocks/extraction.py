@@ -1,9 +1,9 @@
-"""Extraction state + loading faces — the bridge from a static pit to an OPERATING mine.
+"""Extraction state + loading faces, the bridge from a static pit to an OPERATING mine.
 
 Given the exact pit (``in_pit``) and a mining progress fraction, benches are extracted top-down
 (the only physical order): the state says which levels are fully out, which level is the active
 bench, and which pit blocks remain. Loading FACES are seeded k-means clusters of the remaining
-active-bench blocks — each face is a shovel position with its local mean grade, ore/waste split
+active-bench blocks, each face is a shovel position with its local mean grade, ore/waste split
 and available tonnage. This is what a haulage simulator (e.g. minehaulsim) consumes to ground
 truck cycles in geology: grade at face, bench elevation, ore vs waste destination.
 """
@@ -143,7 +143,7 @@ def loading_faces(
     rng = stream(seed, f"faces:level{lv}")
     centroids = pts[rng.choice(pts.shape[0], size=k, replace=False)]
     assign = np.zeros(pts.shape[0], dtype=np.int64)
-    for _ in range(12):  # Lloyd iterations — plenty for bench-scale point sets
+    for _ in range(12):  # Lloyd iterations, plenty for bench-scale point sets
         d2 = ((pts[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
         assign = d2.argmin(axis=1)
         for c in range(k):
