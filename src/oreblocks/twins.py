@@ -1,7 +1,7 @@
 """One-call synthetic MineLib-nature instances ("twins") with a stamped exact optimum.
 
-``make_twin`` chains the whole pipeline — seeded deposit -> UPIT economics -> slope precedence ->
-exact solve — and ``Twin.write`` emits the instance in exact MineLib format plus a meta sidecar
+``make_twin`` chains the whole pipeline, seeded deposit -> UPIT economics -> slope precedence ->
+exact solve, and ``Twin.write`` emits the instance in exact MineLib format plus a meta sidecar
 carrying the stamped optimum, so any UPIT solver can be validated against a known-by-construction
 answer without touching licensed data. This is what CAOS PitForge consumes as its license-free
 realistic mid-size instances, and what regression/scale tests generate on the fly.

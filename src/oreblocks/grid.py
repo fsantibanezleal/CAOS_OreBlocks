@@ -6,7 +6,7 @@ against newman1: a block's predecessors sit one level ABOVE it), so everything o
 directly comparable with the published library. Viewers that draw depth-down (z=0 at the surface)
 simply flip: ``z_down = (nz - 1) - level``.
 
-Flat indexing is ``index = (level * ny + iy) * nx + ix`` — x fastest, then y, then level.
+Flat indexing is ``index = (level * ny + iy) * nx + ix``, x fastest, then y, then level.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ class BlockGrid:
         return ix, iy, level
 
     def coord_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """(x, y, level) int32 arrays for every block, in flat order — the MineLib id order."""
+        """(x, y, level) int32 arrays for every block, in flat order, the MineLib id order."""
         ii = np.arange(self.n_blocks, dtype=np.int64)
         level, rem = np.divmod(ii, self.nx * self.ny)
         iy, ix = np.divmod(rem, self.nx)

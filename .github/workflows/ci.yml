@@ -48,3 +48,5 @@ jobs:
           exit $fail
       - name: CI budget, trunk-only triggers, no training (ADR-0074)
         run: python3 scripts/check_ci_budget.py
+      - name: No em-dash and no emoji in tracked content (ADR-0067)
+        run: python3 scripts/check_content_standards.py

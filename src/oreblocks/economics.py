@@ -1,4 +1,4 @@
-"""Block economics — the UPIT value model with per-block optimal destination.
+"""Block economics, the UPIT value model with per-block optimal destination.
 
 A block's net value is the better of its two destinations, exactly the semantics of a MineLib
 ``.upit`` column (verified against newman1, where the published net value equals
@@ -43,7 +43,7 @@ def cutoff_grade(econ: Econ) -> float:
 
 
 def block_values(dep: Deposit, econ: Econ) -> np.ndarray:
-    """Net value per block (float64) at the optimal destination — the ``.upit`` column."""
+    """Net value per block (float64) at the optimal destination, the ``.upit`` column."""
     waste = -econ.mining_cost * dep.tonnage
     ore = (dep.grade * econ.recovery * econ.price - econ.processing_cost) * dep.tonnage + waste
     return np.maximum(waste, ore)
