@@ -178,6 +178,74 @@ def test_exact_opbsp_matches_or_beats_the_heuristic_and_respects_capacity():
             assert used <= inst.limit[r][t] + 1e-6
 
 
+def _assert_destination_plan_feasible(inst, prec, plan):
+    npv, use = ob.pcpsp_schedule_value(inst, plan.period_of_block, plan.destination_of_block)
+    assert npv == pytest.approx(plan.npv, rel=1e-9, abs=1e-6)
+    assert (use <= inst.limit * (1 + 1e-9) + 1e-6).all(), "capacity overrun"
+    per = plan.period_of_block
+    for b in np.nonzero(per >= 0)[0]:
+        for p in prec.preds(b):
+            assert 0 <= per[p] <= per[b], "precedence broken"
+
+
+def test_pcpsp_lp_equals_the_critical_multiplier_bound_when_only_mining_binds():
+    """With one resource that every destination consumes alike, choosing the destination is free, so the
+    PCPSP LP must equal the CPIT LP. Two unrelated solvers (HiGHS on the full LP, the critical
+    multiplier algorithm on parametric closures) on one quantity."""
+    twin, inst = _pcpsp(dims=(8, 8, 5), periods=4)
+    one = ob.Pcpsp(
+        name="one", n_blocks=inst.n_blocks, n_periods=inst.n_periods, n_destinations=2,
+        discount_rate=inst.discount_rate, value=inst.value, forbidden=inst.forbidden,
+        limit=inst.limit[:1], sense=inst.sense[:1], coef=inst.coef[:1],
+    )
+    lp = ob.pcpsp_lp_bound(one, twin.precedence)
+    cma = ob.cpit_lp_relaxation(one.to_cpit(), twin.precedence).bound
+    assert lp is not None and lp.status == "optimal"
+    assert lp.bound == pytest.approx(cma, rel=1e-6)
+
+
+def test_pcpsp_lp_bounds_every_destination_plan():
+    twin, inst = _pcpsp(dims=(7, 7, 4), periods=3)
+    lp = ob.pcpsp_lp_bound(inst, twin.precedence)
+    exact = ob.solve_opbsp_exact(inst, twin.precedence, max_variables=40_000, time_limit=60)
+    heur = ob.destination_toposort(inst, twin.precedence)
+    assert lp is not None
+    for plan in (p for p in (exact, heur) if p is not None):
+        assert plan.npv <= lp.bound * (1 + 1e-7)
+    assert ob.pcpsp_lp_bound(inst, twin.precedence, max_rows=10) is None, "over budget returns None"
+
+
+def test_lift_keeps_the_cpit_value_and_the_destination_search_never_loses_it():
+    twin, inst = _pcpsp()
+    prec = twin.precedence
+    cpit = inst.to_cpit()
+    base = ob.toposort_schedule(cpit, prec, weight="expected")
+    lift = ob.lift_to_pcpsp(inst, prec, base.period_of_block, grade=twin.deposit.grade)
+    assert lift.npv == pytest.approx(base.npv, rel=1e-9)
+    _assert_destination_plan_feasible(inst, prec, lift)
+    out = ob.exact_destination_local_search(inst, prec, lift, rounds=8, d_max=80, grade=twin.deposit.grade)
+    assert out.npv >= lift.npv - 1e-6 * abs(lift.npv)
+    _assert_destination_plan_feasible(inst, prec, out)
+
+
+def test_destination_toposort_is_cpit_toposort_when_the_plant_never_binds():
+    """With room in the plant every period the destination rule must reduce to the fixed-destination
+    rule, block for block. Before 0.6.0 the default weights made this the ONLY thing it did."""
+    twin, inst = _pcpsp()
+    roomy = ob.Pcpsp(
+        name="roomy", n_blocks=inst.n_blocks, n_periods=inst.n_periods, n_destinations=2,
+        discount_rate=inst.discount_rate, value=inst.value, forbidden=inst.forbidden,
+        limit=np.stack([inst.limit[0], inst.limit[1] * 100.0]), sense=inst.sense, coef=inst.coef,
+    )
+    rel = ob.cpit_lp_relaxation(roomy.to_cpit(), twin.precedence, resource=0)
+    w = -rel.expected_times()
+    dest = ob.destination_toposort(roomy, twin.precedence, weight=w)
+    fixed = ob.toposort_schedule(roomy.to_cpit(), twin.precedence, weight=w)
+    np.testing.assert_array_equal(dest.period_of_block, fixed.period_of_block)
+    assert dest.npv == pytest.approx(fixed.npv, rel=1e-9)
+    _assert_destination_plan_feasible(roomy, twin.precedence, dest)
+
+
 def test_opbsp_returns_none_rather_than_faking_an_exact_answer():
     twin, inst = _pcpsp(dims=(16, 16, 9), periods=8)
     assert ob.solve_opbsp_exact(inst, twin.precedence, max_variables=1000) is None
@@ -224,6 +292,29 @@ def test_min_width_reduces_slivers_and_reports_what_it_cost():
         for p in prec.preds(b):
             if per[p] >= 0:
                 assert per[p] <= per[b], "smoothing must not break precedence"
+
+
+def test_min_width_keeps_every_capacity_and_stays_under_the_bound():
+    """The smoothed plan is a FEASIBLE plan. Before 0.6.0 it was not, and it could beat a certified bound."""
+    twin, inst = _instance(n_res=2, slack=(0.55, 0.42))
+    prec = twin.precedence
+    ix, iy, lev = twin.deposit.grid.coord_arrays()
+    base, _ = ob.solve_cpit(inst, prec)
+    out, rep = ob.enforce_min_width(inst, base, ix, iy, lev, prec, target_width=4, passes=6)
+    for r in range(inst.n_resources):
+        assert (out.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all(), "capacity overrun"
+    bound, _ = ob.cpit_bound_two_resources(inst, prec)
+    assert out.npv <= bound * (1 + 1e-9)
+    assert rep.moved_blocks + rep.blocked_by_capacity > 0, "the instance must exercise the smoothing"
+
+
+def test_min_width_refuses_an_infeasible_input():
+    twin, inst = _instance(n_res=2)
+    ix, iy, lev = twin.deposit.grid.coord_arrays()
+    base, _ = ob.solve_cpit(inst, twin.precedence)
+    crowded = ob.ScheduleResult(method="crowded", period_of_block=np.where(base.period_of_block >= 0, 0, -1), npv=0.0)
+    with pytest.raises(ValueError, match="capacity-feasible"):
+        ob.enforce_min_width(inst, crowded, ix, iy, lev, twin.precedence)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -392,3 +483,34 @@ def test_the_sliding_window_refuses_to_be_starved() -> None:
     twin, inst = _instance(n_res=2)
     with pytest.raises(ValueError, match="candidate blocks"):
         ob.sliding_window_schedule(inst, twin.precedence, window=3, fix=1, cand_max=8)
+
+
+def test_expected_times_never_decrease_down_a_precedence_arc():
+    """The sliding window takes a PREFIX of the blocks ordered by E_b as its candidate set. That prefix
+    is predecessor-closed only because the LP solution is closed in every period, so E_a <= E_b for every
+    arc (b requires a). Asserted rather than assumed."""
+    twin, inst = _instance(dims=(10, 10, 6), n_res=2)
+    _, rels = ob.cpit_bound_two_resources(inst, twin.precedence)
+    for rel in rels:
+        e = rel.expected_times()
+        prec = twin.precedence
+        owner = np.repeat(np.arange(inst.n_blocks), np.diff(prec.pstart))
+        assert (e[prec.plist] <= e[owner] + 1e-9).all()
+
+
+def test_sliding_window_uses_lp_guided_candidates_and_beats_exts():
+    """With a pool larger than the cap, the window works on the LP's own guess of what it will mine.
+    Before 0.6.0 the set had to cover the whole remaining horizon, and the rung refused on every twin."""
+    twin, inst = _instance(dims=(12, 12, 7), n_res=2, periods=6, slack=(0.6, 0.45))
+    prec = twin.precedence
+    _, rels = ob.cpit_bound_two_resources(inst, prec)
+    tight = min(rels, key=lambda r: r.bound)
+    exts = ob.toposort_schedule(inst, prec, weight="expected", relaxation=tight)
+    sw = ob.sliding_window_schedule(inst, prec, window=3, fix=1, relaxation=tight, cand_max=500, mip_gap=3e-2)
+    for r in range(inst.n_resources):
+        assert (sw.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all()
+    per = sw.period_of_block
+    for b in np.nonzero(per >= 0)[0]:
+        for p in prec.preds(b):
+            assert 0 <= per[p] <= per[b]
+    assert sw.npv >= exts.npv, "a window solved jointly must not lose to the rounding it starts from"

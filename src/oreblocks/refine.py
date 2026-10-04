@@ -27,9 +27,10 @@ it should be.
 Metall. 118(5), 2018, doi:10.17159/2411-9717/2018/v118n5a8). Conventional methods produce pushbacks
 with "narrow benches and pit bottom, irregular boundaries, and multiple separated components", and
 manual post-modification "destroys value and violates resource constraints". The smoothing here is an
-adaptive opening: a mined cell whose bench neighbourhood is thinner than the target width is deferred
-to the period of its majority neighbour. It COSTS NPV, and reporting that cost is the point: an
-operable plan is worth less on paper than an inoperable one.
+adaptive opening: a mined cell whose bench neighbourhood is thinner than the target width is moved
+to the period of its majority neighbour, provided precedence holds both ways and the receiving period
+has the capacity. The result is a FEASIBLE schedule, so its NPV is comparable with every other plan and
+the difference is the honest price of operability.
 """
 
 from __future__ import annotations
@@ -374,6 +375,9 @@ class SmoothingReport:
     below_target_before: int = 0
     below_target_after: int = 0
     target_width: int = 0
+    #: moves the operability rule wanted and the receiving period could not take. Before 0.6.0 these
+    #: moves were made anyway, and the smoothed plan reported an NPV ABOVE a certified upper bound.
+    blocked_by_capacity: int = 0
 
     @property
     def below_target_reduction_pct(self) -> float:
@@ -401,9 +405,14 @@ def enforce_min_width(
 
     A mined cell whose run of same-period neighbours along a bench is shorter than ``target_width``
     is a place no shovel can work. It is moved to the period the majority of its 4-neighbours on that
-    bench belong to, provided precedence still holds. Capacity is NOT re-imposed, so the result is
-    reported as an OPERABILITY view of the plan rather than as a feasible replacement for it, and the
-    NPV it costs is the honest price of operability.
+    bench belong to, provided precedence still holds in both directions AND every resource of the
+    receiving period has room for it. The input schedule must be feasible; the output then is too,
+    by construction, and its NPV difference is the price of operability rather than a mixture of that
+    price and a capacity violation.
+
+    Before 0.6.0 capacity was not re-imposed. A downstream product measured the consequence: the
+    smoothed plan of a vein twin reported 288.9 M against a certified upper bound of 285.4 M, which no
+    feasible plan can do, and its "cost of operability" was partly the value of overrunning a mill.
     """
     period = result.period_of_block.copy()
     nx = int(x.max()) + 1
@@ -429,6 +438,13 @@ def enforce_min_width(
         return best
 
     sstart, slist = _successors(prec, period.shape[0])
+    coef = np.asarray(inst.coef, dtype=np.float64).reshape(inst.n_resources, -1)
+    remaining = np.asarray(inst.limit, dtype=np.float64).reshape(inst.n_resources, inst.n_periods).copy()
+    for b in np.nonzero(period >= 0)[0]:
+        remaining[:, period[b]] -= coef[:, b]
+    if (remaining < -1e-6 * np.maximum(1.0, np.abs(np.asarray(inst.limit, dtype=np.float64)))).any():
+        raise ValueError("enforce_min_width needs a capacity-feasible input schedule")
+    blocked = 0
     npv_before, _, _ = schedule_value(inst, period)
     runs_before = [run_len(int(b)) for b in np.nonzero(period >= 0)[0]]
     width_before = min(runs_before, default=0)
@@ -465,6 +481,12 @@ def enforce_min_width(
             )
             if not ok:
                 continue
+            need = coef[:, b]
+            if (remaining[:, want] < need - 1e-9).any():
+                blocked += 1
+                continue
+            remaining[:, period[b]] += need
+            remaining[:, want] -= need
             period[b] = want
             changed += 1
             moved += 1
@@ -484,7 +506,10 @@ def enforce_min_width(
         per_period_resource=per_res,
         mined_blocks=int((period >= 0).sum()),
         heuristic=True,
-        notes=f"{moved} slivers absorbed; operability view, capacity not re-imposed",
+        notes=(
+            f"{moved} slivers absorbed, {blocked} moves refused for capacity; "
+            "precedence and capacity re-imposed, so the plan is feasible"
+        ),
     )
     _ = (nx, ny)
     return smoothed, SmoothingReport(
@@ -496,4 +521,5 @@ def enforce_min_width(
         below_target_before=int(narrow_before),
         below_target_after=int(narrow_after),
         target_width=int(target_width),
+        blocked_by_capacity=int(blocked),
     )

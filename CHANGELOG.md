@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.6.0] - 2026-10-04
+
+Display version `0.06.000`. Four defects found by measuring a downstream product's thirteen committed
+cases (issue #24). Each one produced a plausible number.
+
+### Fixed
+- **The Gershon weight counted precedence PATHS, not successors.** `_successor_profit_sums` added each
+  successor's accumulated weight, so a block reachable along `k` paths counted `k` times; with five or
+  nine arcs per block the count grows geometrically with depth. It now sums the successor SET
+  `B+(b)` (Gershon 1987a, as tabulated by Chicoisne et al. 2012), with cones held as bitsets. GeTS lost
+  to greedy on seven of twelve cases before; with the definition exact it beats greedy on porphyry
+  (0.810 against 0.556 of the bound) and core-halo (0.779 against 0.136), and it still loses on a
+  narrow vein (0.174 against 0.762), which is the weight's own blindness to the cost of reaching ore.
+- **`enforce_min_width` returned infeasible plans.** Moves were made with no capacity check, and a
+  smoothed plan reported an NPV above a certified upper bound. A move is now made only where every
+  resource of the receiving period has room; the input must be feasible; `SmoothingReport` gains
+  `blocked_by_capacity`.
+- **`destination_toposort` dumped ore the moment the plant was full** and walked greedy weights by
+  default, so on the richer problem it ended below the fixed-destination plan. Each destination now
+  gets its own earliest feasible period and the best discounted one wins; `weight=` takes the ExTS
+  order; `allowed=` is accepted. With the plant never binding it reduces to CPIT TopoSort exactly.
+- **`sliding_window_schedule` refused on almost every real-size instance.** Its candidate set had to
+  cover the window plus the whole remaining horizon, and its `relaxation` argument was never read. It
+  now takes the predecessor-closed prefix of the blocks ordered by the LP expected extraction time,
+  sized by the window's own capacity.
+
+### Added
+- `lift_to_pcpsp`: a fixed-destination plan read as a PCPSP plan, at the CPIT value.
+- `exact_destination_local_search`: OPBSP-[D], the C-PIT[D] re-solve with binary destinations. Never
+  ends below its start.
+- `pcpsp_lp_bound` and `PcpspBound`: the PCPSP LP relaxation through HiGHS, with a row budget. On the
+  published `newman1.pcpsp` it reproduces the published PCPSP LP bound, 24,486,549, to the unit.
+- `pcpsp_schedule_value`: value and resource use of a destination schedule, refusing a forbidden
+  destination.
+
+### Changed
+- `docs/scheduling.md`: sections 3, 9.3, 9.4 and 9.6 rewritten for the above; the stale statement that
+  the exact C-PIT[D] search is not implemented is removed (it has been, since 0.3.0).
+
 ## [0.5.2] - 2026-09-26
 
 Display version `0.05.002` (`VERSION`; the CAOS format is `X.XX.XXX` with the PEP 440 form in

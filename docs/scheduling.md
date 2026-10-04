@@ -91,7 +91,7 @@ remaining resources fit it. Feasibility is by construction.
 | `weight=` | formula | origin |
 |---|---|---|
 | `"greedy"` | `w_b = p_b` | the obvious baseline (GrTS) |
-| `"gershon"` | `w_b = p_b + sum of p over the whole successor cone` | Gershon 1987a (GeTS) |
+| `"gershon"` | `w_b = sum of p_a over the successor SET B+(b)`, each successor once | Gershon 1987a (GeTS) |
 | `"expected"` | `w_b = -E_b` from the LP relaxation | Chicoisne et al. 2012 (ExTS) |
 
 with the expected extraction time
@@ -102,8 +102,25 @@ E_b = sum_{t=1..T} t (x*_bt - x*_b,t-1) + (T + 1)(1 - x*_bT)
 
 read off the fractional LP solution. This is the bridge: the bound is not only the yardstick, it is
 the seed of the plan. The published spread is large. On their AsiaMine instance with two resource
-constraints, greedy reached 0.138 of the LP bound and expected-time reached 0.972, using the same
-scheduling code.
+constraints, greedy reached 0.138 of the LP bound, Gershon 0.840 and expected-time 0.972, using the
+same scheduling code.
+
+**The Gershon weight counted paths before 0.6.0.** It summed each successor's already-accumulated
+weight over a reverse topological sweep, so a block reachable from `b` along `k` precedence paths was
+counted `k` times. With five or nine arcs per block the path count grows geometrically with depth and
+the weight was dominated by the deepest blocks times their multiplicity; on a downstream product's
+twelve non-trivial cases GeTS lost to greedy on seven. The cones are now bitsets (Python integers)
+built in reverse topological order as the union of each successor's cone plus that successor, and a
+cone is released once every predecessor has read it. A test compares the result with the set
+definition computed the slow way.
+
+With the definition exact, GeTS is still not uniformly better than greedy, and the reason is the
+weight itself: it rewards what a block unlocks and ignores what it costs to reach. On a narrow vein
+every block along the strike has the vein in its cone, so the order opens the whole strike length at
+once and pays for its waste early. Measured on four seeded 10-period twins with two resources, as a
+fraction of the Algorithm 4 bound: porphyry 0.810 against greedy 0.556; core-halo 0.779 against
+0.136; layered 0.830 against 0.857; vein 0.174 against 0.762. ExTS reached 0.715 to 0.969 on the same
+four.
 
 `improve_schedule` then applies a **shift** local search: pull positive-value blocks forward when
 precedence and capacity allow, push negative-value blocks back when their successors allow. Both
@@ -112,7 +129,8 @@ neighbourhood family used across the mine-scheduling metaheuristic literature (L
 Dimitrakopoulos, R., European Journal of Operational Research 222(3), 2012,
 [doi:10.1016/j.ejor.2012.05.029](https://doi.org/10.1016/j.ejor.2012.05.029)). It is deliberately
 **not** the exact `C-PIT[D]` neighbourhood of Chicoisne et al. section 3.3, which re-solves a
-restricted integer program per neighbourhood and needs a MILP solver. That one is not implemented.
+restricted integer program per neighbourhood and needs a MILP solver; that one is
+`refine.exact_local_search`, section 9.2.
 
 `solve_cpit` runs the whole ladder: bound, schedule from the tighter relaxation, improve, attach the
 bound, and assert that the feasible objective never exceeds it.
@@ -247,12 +265,48 @@ consumed capacity in an earlier window, so the plan quietly double-booked the fl
 collapsed to a third of its value while every feasibility check still passed. Only the frozen prefix
 is a decision; everything after it must be released before the next slide.
 
+**The candidate set (0.6.0).** The published method solves the full model per window. Without a
+commercial MILP solver the window works on a candidate set: the undecided blocks ordered by the LP
+expected extraction time `E_b` of the tightest relaxation, taken from the front until their extraction
+tonnage covers `cover` times the WINDOW's capacity, never more than `cand_max` (the method raises
+rather than starving the window). The relaxation is closed in every period, so `E_a <= E_b` on every
+arc (`b` requires `a`) and the prefix is predecessor-closed; a test asserts that inequality, and the
+closure is still completed explicitly so a tie cannot block a candidate. Before 0.6.0 the set had to
+cover the window plus the whole remaining horizon, ordered by value density, and the `relaxation`
+argument was never read: on a downstream product's thirteen cases the method refused on twelve.
+Measured after the change on that product's 6,912-block porphyry twin (8 periods, two resources):
+1.34 percent below the bound, against 4.62 percent for ExTS and 4.22 percent for the exact C-PIT[D]
+local search, in 17 minutes on one core.
+
 ### 9.4 Destinations: when the cutoff grade becomes an output
 
-`destinations.destination_toposort` chooses each block's destination against the capacity remaining in
-the period it is scheduled into. When the plant is full the same block goes to waste, so the effective
-cutoff RISES exactly in the periods where processing binds. That is the qualitative difference between
-CPIT and PCPSP made visible: in CPIT the cutoff is a number decided before the model ran.
+`destinations.destination_toposort` walks a weighted topological order (pass `weight=-E_b` for the
+ExTS order) and, for every destination of a block, finds the EARLIEST period not before any predecessor
+whose remaining resources take it there; it keeps the destination whose discounted value at that
+period is the largest. Ore therefore waits for the plant when the plant a period later is worth more
+than the dump now, and falls to the dump when it is not, so the effective cutoff is an output of the
+schedule. Before 0.6.0 it walked greedy weights by default and took the first period where ANY
+destination fitted, which dumped ore the moment the plant was full; on a downstream product's cases it
+ended below the fixed-destination plan everywhere, although choosing the destination is the richer
+problem. With the plant never binding it now reduces to CPIT TopoSort block for block, which a test
+asserts.
+
+`destinations.lift_to_pcpsp` reads a fixed-destination plan as a PCPSP plan (every block at its
+a-priori best destination, which is exactly how `Pcpsp.to_cpit` builds the CPIT instance), so its value
+is the CPIT value. `destinations.exact_destination_local_search` is the C-PIT[D] re-solve with
+destinations: the same three neighbourhoods, a restricted model whose free blocks carry cumulative
+extraction variables `y_it` and binary destination variables `z_idt` linked by
+`sum_d z_idt = y_it - y_i,t-1`, solved with HiGHS. Started from a lifted plan it can never end below
+the CPIT plan, which is the property the richer problem has to show.
+
+`destinations.pcpsp_lp_bound` solves the PCPSP LP relaxation (cumulative extraction monotone and closed
+in every period, destination fractions linked to it, resource rows over the fractions) with HiGHS over
+every block of the instance, and returns `None` above a row budget. On the published `newman1.pcpsp`
+it gives 24,486,549.02 in about two seconds; the published PCPSP LP upper bound is 24,486,549
+(Jelvez, Morales and Nancel-Penard 2018, Table 3, from two Bienstock-Zuckerberg implementations). On an
+instance where only mining binds and every destination consumes it alike, the PCPSP LP must equal the
+CPIT LP, and a test asserts it against the critical multiplier algorithm: two unrelated solvers on one
+quantity.
 
 `destinations.solve_opbsp_exact` solves the fully binary formulation exactly with HiGHS, in the
 variables Jelvez et al. use, and returns `None` above a size budget rather than passing a heuristic
@@ -279,6 +333,12 @@ Two results the implementation reproduces and the tests assert:
 target width. It reports how many blocks sat in a run narrower than the target before and after, and
 what the change cost in NPV, because an operable plan is worth less on paper than an inoperable one
 and hiding that is how a schedule looks better than it is.
+
+Since 0.6.0 a move is made only if every resource of the receiving period has room, the input must be
+capacity-feasible, and the output is then feasible by construction; the report counts the moves
+refused for capacity. Before, capacity was not re-imposed: a downstream product's vein twin reported a
+smoothed NPV of 288.9 M against a certified upper bound of 285.4 M, which no feasible plan can do, and
+the "cost of operability" mixed the price of operability with the value of overrunning a mill.
 
 Precedence cuts both ways here and the first version only checked one: moving a block later can be
 overtaken by a successor already scheduled ahead of it.
