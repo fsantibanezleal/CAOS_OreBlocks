@@ -67,13 +67,16 @@ The bound needs **no LP solver**. Chicoisne et al. 2012 (Operations Research 60(
 relaxation is solved exactly in `O(mn log n)` for one resource per period, as a sequence of
 parametric nested pits, which are maximum closures, which this package already computes exactly.
 
-On the published `newman1.cpit` this implementation returns a certified bound of **24 487 410**
-against the published LP bound of **24 486 549** (relative difference 3.5e-5, and the residual is in
-the right direction because the single-resource relaxation is looser than the joint bound).
+On the published `newman1.cpit` with its two resources, Algorithm 4 (one resource relaxed at a time)
+returns **24 487 410** and the joint Bienstock-Zuckerberg bound (`cpit_bz_bound`) returns
+**24 486 184**, which is the CPIT LP upper bound MineLib publishes for that instance. On
+`newman1.pcpsp`, where the model also chooses each block's destination, `pcpsp_lp_bound` returns
+**24 486 549**, the published PCPSP LP upper bound (Jelvez, Morales and Nancel-Penard 2018, Table 3).
+The PCPSP bound sits above the CPIT one because PCPSP is the richer problem.
 
 Full detail, including the three file-format traps and the explicit list of what is not implemented
-(stockpiles, blending, minimum-production constraints, the exact `C-PIT[D]` local search, stochastic
-scheduling): **[docs/scheduling.md](docs/scheduling.md)**.
+(stockpiles, blending, minimum-production constraints, two-stage stochastic scheduling):
+**[docs/scheduling.md](docs/scheduling.md)**.
 
 ## Pieces
 
@@ -86,6 +89,15 @@ scheduling): **[docs/scheduling.md](docs/scheduling.md)**.
 | `solve_upit` | exact Picard max-closure → Dinic min-cut; closure + value-identity self-checks |
 | `extraction_state` / `loading_faces` | top-down bench extraction + seeded k-means shovel faces (grade at face, ore fraction, tonnes), the bridge to haulage simulators |
 | `write_minelib` / `read_*` | the `.blocks/.prec/.upit` triplet + a meta sidecar with the stamped optimum |
+| `read_cpit` / `read_pcpsp` / `write_*` | the MineLib scheduling files, with the forbidden-destination sentinel |
+| `cpit_lp_relaxation` / `cpit_bound_two_resources` | the critical multiplier bound (exact LP for one resource), Algorithm 4 |
+| `cpit_bz_bound` | the joint LP bound over every resource, Bienstock-Zuckerberg |
+| `toposort_schedule` | GrTS, GeTS (successor-set weights) and ExTS (LP expected times) |
+| `improve_schedule` / `exact_local_search` | shift local search; the exact C-PIT[D] re-solve |
+| `sliding_window_schedule` | Cullenbine, Wood and Newman 2011, LP-guided candidate set |
+| `destination_toposort` / `exact_destination_local_search` / `pcpsp_lp_bound` | PCPSP: destination choice, OPBSP-[D], the PCPSP LP bound |
+| `enforce_min_width` / `schedule_coherence` | capacity-feasible sliver absorption; components and widths per period |
+| `perturb_values` / `evaluate_across` | a correlated, mean-preserving value ensemble and the robust choice |
 
 ## Convention notes
 
@@ -102,4 +114,4 @@ scheduling): **[docs/scheduling.md](docs/scheduling.md)**.
 
 ## License
 
-Apache-2.0.
+MIT, as `LICENSE` and `pyproject.toml` state.

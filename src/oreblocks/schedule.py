@@ -45,7 +45,7 @@ resources fit. Three published weightings, in increasing order of quality:
 name         weight                                       origin
 ===========  ===========================================  ======================================
 ``greedy``   ``w_b = p_b``                                 the obvious baseline (GrTS)
-``gershon``  ``w_b = sum of profits of all successors``    Gershon 1987a (GeTS)
+``gershon``  ``w_b = sum of p_a over the successor set``  Gershon 1987a (GeTS)
 ``expected`` ``w_b = -E_b`` from the LP relaxation         Chicoisne et al. 2012 (ExTS)
 ===========  ===========================================  ======================================
 
@@ -115,6 +115,31 @@ def _successors(prec: Precedence, n: int) -> tuple[np.ndarray, np.ndarray]:
             slist[fill[p]] = b
             fill[p] += 1
     return sstart, slist
+
+
+def _depth_order(prec: Precedence, n: int) -> np.ndarray:
+    """Longest precedence path from a block with no predecessor: 0 at the surface, growing downwards."""
+    depth = np.zeros(n, dtype=np.int64)
+    for b in toposort_order(prec, np.zeros(n)):
+        preds = prec.plist[prec.pstart[b] : prec.pstart[b + 1]]
+        if preds.size:
+            depth[b] = int(depth[preds].max()) + 1
+    return depth
+
+
+def _close_upwards(prec: Precedence, seeds: np.ndarray, eligible: np.ndarray, n: int) -> np.ndarray:
+    """``seeds`` plus every ``eligible`` block they need first, transitively, as a sorted id array."""
+    inside = np.zeros(n, dtype=bool)
+    inside[seeds] = True
+    stack = [int(b) for b in seeds]
+    while stack:
+        b = stack.pop()
+        for k in range(prec.pstart[b], prec.pstart[b + 1]):
+            a = int(prec.plist[k])
+            if eligible[a] and not inside[a]:
+                inside[a] = True
+                stack.append(a)
+    return np.nonzero(inside)[0]
 
 
 # ------------------------------------------------------------------------------------------------
@@ -501,33 +526,60 @@ def toposort_schedule(
 
 
 def _successor_profit_sums(prec: Precedence, values: np.ndarray) -> np.ndarray:
-    """``w(b) = sum of p_a over every block a that has b as a predecessor, transitively``.
+    """``w(b) = sum_{a in B+(b)} p_a``: the total profit of every block that has ``b`` as a predecessor.
 
-    Gershon 1987a. Computed by a reverse topological sweep, so it is the sum over the whole
-    successor cone rather than only the immediate successors.
+    Gershon 1987a, as tabulated by Chicoisne et al. 2012 (section 3.2): ``B+(b)`` is the SET of all
+    successors of ``b``, transitively, and ``b`` itself is not in it. Each successor counts ONCE.
+
+    The first version summed the successors' already-accumulated weights over a reverse topological
+    sweep. On a precedence DAG a block below ``b`` is reachable along many paths (a 45 degree cone with
+    five or nine arcs per block has a number of paths that grows geometrically with depth), so that
+    sum counted every deep block once per PATH. The weight was dominated by the deepest blocks
+    multiplied by their path counts, and on a product's thirteen cases GeTS lost to plain greedy on
+    seven, against a published ordering where it wins every time (0.840 against 0.138 on AsiaMine).
+
+    The cone of every block is held as a bitset (a Python integer), built in reverse topological
+    order as the union of each immediate successor's cone plus that successor. A cone is released
+    as soon as every predecessor that needs it has read it, so the peak memory is the frontier of the
+    sweep rather than ``n`` cones at once. Cost: one big-integer OR per arc and one ``n``-bit
+    population sum per block, ``O(n^2 / 64)`` machine words in the worst case.
     """
     n = values.shape[0]
     sstart, slist = _successors(prec, n)
     indeg = np.diff(prec.pstart)
-    heap = [int(b) for b in np.nonzero(indeg == 0)[0]]
+    stack = [int(b) for b in np.nonzero(indeg == 0)[0]]
     order: list[int] = []
     deg = indeg.copy()
-    while heap:
-        b = heap.pop()
+    while stack:
+        b = stack.pop()
         order.append(b)
         for k in range(sstart[b], sstart[b + 1]):
             c = int(slist[k])
             deg[c] -= 1
             if deg[c] == 0:
-                heap.append(c)
+                stack.append(c)
     if len(order) != n:
         raise AssertionError("precedence graph has a cycle")
-    w = values.astype(np.float64).copy()
+
+    v = np.asarray(values, dtype=np.float64)
+    nbytes = (n + 7) // 8
+    # how many predecessors still have to read each cone before it can be released
+    readers = np.diff(prec.pstart).astype(np.int64)
+    cones: dict[int, int] = {}
+    w = np.zeros(n, dtype=np.float64)
     for b in reversed(order):
-        acc = 0.0
+        cone = 0
         for k in range(sstart[b], sstart[b + 1]):
-            acc += w[int(slist[k])]
-        w[b] += acc
+            c = int(slist[k])
+            cone |= cones[c] | (1 << c)
+            readers[c] -= 1
+            if readers[c] == 0:
+                del cones[c]
+        if cone:
+            bits = np.unpackbits(np.frombuffer(cone.to_bytes(nbytes, "little"), dtype=np.uint8), bitorder="little")
+            w[b] = float(v[bits[:n].astype(bool)].sum())
+        if readers[b] > 0:
+            cones[b] = cone
     return w
 
 
@@ -894,13 +946,21 @@ def sliding_window_schedule(
       period whose capacity is their total and whose discount factor is that of the FIRST of them.
       That over-values tail production, which is the standard relaxation for this heuristic: it keeps
       the tail from dominating the window while still making the window aware a horizon exists.
-    - **The candidate set is sized by TONNAGE**, not by a constant: the frontier plus the best of
-      the undecided pool by value density, taken until the cumulative extraction resource covers
-      ``cover`` times the window's own capacity, and never more than ``cand_max``. A flat cap is
-      the wrong shape here, and measurably so: 150 blocks starved the sub-problem and cut the
-      objective from 39.7 M to 10.4 M on a 1008-block twin, because the frontier alone could not
-      reach a period's limit. The published method solves the full model per window; a pure-Python
-      caller cannot, and a cap that is named beats a horizon that is silently one period.
+    - **The candidate set is the LP's own guess of what the window will mine.** The published method
+      solves the full model per window; a caller without a commercial MILP solver cannot, so the
+      undecided blocks are ordered by the LP expected extraction time ``E_b`` of ``relaxation`` and
+      taken from the front until their extraction tonnage covers ``cover`` times the WINDOW's
+      capacity, never more than ``cand_max``. The relaxation is closed in every period, so ``E_b`` never
+      decreases down a precedence arc and that prefix is predecessor-closed; the closure is still
+      completed explicitly, so a tie in ``E_b`` can never leave a candidate blocked by a predecessor
+      outside the set. Blocks outside the set are not forbidden, they are only decided on a later
+      slide.
+
+    Sizing changed in 0.6.0. The set used to cover the window AND the whole remaining horizon, by
+    value density: on every twin of a downstream product's thirteen cases that asked for thousands of
+    blocks, the method refused, and it ran on one case of thirteen. The ``relaxation`` argument was
+    accepted and never read. A flat cap is still the wrong shape (150 blocks starved a 1008-block twin
+    from 39.7 M to 10.4 M), which is why the size follows tonnage and the cap only refuses.
     """
     from scipy.optimize import LinearConstraint, milp
     from scipy.sparse import coo_matrix
@@ -921,7 +981,15 @@ def sliding_window_schedule(
     period = np.full(n, -1, dtype=np.int64)
     decided = np.zeros(n, dtype=bool)
     used = np.zeros((n_res, t_max))
-    density = np.where(coef[0] > 0, v / np.maximum(coef[0], 1e-9), v)
+    if relaxation is None:
+        _, rels = cpit_bound_two_resources(inst, prec)
+        relaxation = min(rels, key=lambda rel: rel.bound)
+    e_time = relaxation.expected_times()
+    # E_b first, then depth order as the tie-break: a predecessor sits one level up, so among equal
+    # expected times the shallower block comes first and the prefix stays closed
+    rank = np.lexsort((np.arange(n), _depth_order(prec, n), e_time))
+    rank_pos = np.empty(n, dtype=np.int64)
+    rank_pos[rank] = np.arange(n)
 
     start = 0
     while start < t_max:
@@ -933,36 +1001,20 @@ def sliding_window_schedule(
         if pool.size == 0:
             break
 
-        undecided = ~decided
-        frontier = [
-            int(b)
-            for b in pool
-            if not np.any(allowed[prec.plist[prec.pstart[b] : prec.pstart[b + 1]]]
-                          & undecided[prec.plist[prec.pstart[b] : prec.pstart[b + 1]]])
-        ]
-        # Size the candidate set by TONNAGE, not by a constant. It has to be able to FILL the
-        # window's capacity or the sub-problem is starved and the slide mines almost nothing: a flat
-        # cap of 150 blocks cut the objective from 39.7 M to 10.4 M on a 1008-block twin, because the
-        # frontier alone could not reach a period's limit. Take the best of the pool by value density
-        # until the cumulative extraction resource covers `cover` windows' worth, then stop.
-        if pool.size > cand_max:
-            order = pool[np.argsort(-density[pool])]
-            need = cover * float(limit[0, start:stop].sum() + (limit[0, stop:].sum() if has_tail else 0.0))
-            take = int(np.searchsorted(np.cumsum(coef[0, order]), need) + 1)
-            want = int(min(max(take, len(frontier)), order.size))
-            if want > cand_max:
-                # REFUSE rather than starve. Capping here silently returns a schedule that mined 550
-                # blocks of 14,400 because the sub-problem could never reach a period's limit, and a
-                # starved answer that still looks like a schedule is exactly the failure this method
-                # was rewritten to remove. The caller decides: raise the cap and pay, or skip the rung
-                # and say so.
+        if pool.size > cand_max or coef[0, pool].sum() > cover * float(limit[0, start:stop].sum()):
+            order = pool[np.argsort(rank_pos[pool], kind="stable")]
+            need = cover * float(limit[0, start:stop].sum())
+            take = int(min(np.searchsorted(np.cumsum(coef[0, order]), need) + 1, order.size))
+            cand = _close_upwards(prec, order[:take], allowed & ~decided, n)
+            if cand.size > cand_max:
+                # REFUSE rather than starve. A capped set that cannot reach a period's limit returns a
+                # schedule that mines almost nothing and still looks like a schedule. The caller
+                # decides: raise the cap and pay, or skip the rung and say so.
                 raise ValueError(
-                    f"sliding window needs {want} candidate blocks to fill the capacity of periods "
+                    f"sliding window needs {cand.size} candidate blocks to fill the capacity of periods "
                     f"{start}..{stop} and cand_max is {cand_max}. Raise cand_max (the sub-problem is "
                     f"a MILP over cand_max x {n_slot} binaries) or skip this rung"
                 )
-            take = want
-            cand = np.unique(np.concatenate([np.asarray(frontier, dtype=np.int64), order[:take]]))
         else:
             cand = pool
         if cand.size == 0:

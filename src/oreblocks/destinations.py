@@ -44,7 +44,16 @@ from .precedence import Precedence
 from .schedule import _finite_values, toposort_order  # noqa: PLC2701
 from .upit import solve_upit
 
-__all__ = ["DestinationSchedule", "destination_toposort", "solve_opbsp_exact"]
+__all__ = [
+    "DestinationSchedule",
+    "PcpspBound",
+    "destination_toposort",
+    "exact_destination_local_search",
+    "lift_to_pcpsp",
+    "pcpsp_lp_bound",
+    "pcpsp_schedule_value",
+    "solve_opbsp_exact",
+]
 
 
 @dataclass
@@ -70,26 +79,92 @@ def _discount(inst: Pcpsp) -> np.ndarray:
     return 1.0 / (1.0 + inst.discount_rate) ** expo
 
 
+def _processing_destination(inst: Pcpsp) -> int:
+    """The destination that consumes the processing resource: the plant.
+
+    With one resource there is no processing row to read, and destination 1 is taken as the plant,
+    which is the MineLib convention for a two-destination file (0 waste, 1 process).
+    """
+    if inst.n_resources < 2:
+        return min(1, inst.n_destinations - 1)
+    row = min(1, inst.n_resources - 1)
+    return int(np.argmax([float(inst.coef[row][:, dd].sum()) for dd in range(inst.n_destinations)]))
+
+
+def _effective_cutoff(inst: Pcpsp, period: np.ndarray, dest: np.ndarray, grade: np.ndarray | None) -> np.ndarray:
+    cutoff = np.full(inst.n_periods, np.nan)
+    if grade is None:
+        return cutoff
+    proc = _processing_destination(inst)
+    for t in range(inst.n_periods):
+        sel = (period == t) & (dest == proc)
+        if sel.any():
+            cutoff[t] = float(np.asarray(grade)[sel].min())
+    return cutoff
+
+
+def pcpsp_schedule_value(inst: Pcpsp, period: np.ndarray, dest: np.ndarray) -> tuple[float, np.ndarray]:
+    """Discounted value of a destination schedule, and its resource use per resource and period.
+
+    Raises if a mined block has no destination or a forbidden one: a plan that does either is not a
+    plan, and summing a forbidden sentinel value is how a 5e19 lands in an NPV.
+    """
+    d = _discount(inst)
+    use = np.zeros((inst.n_resources, inst.n_periods))
+    npv = 0.0
+    for b in np.nonzero(period >= 0)[0]:
+        dd = int(dest[b])
+        if dd < 0 or inst.forbidden[b, dd]:
+            raise ValueError(f"block {b} is mined with an invalid destination {dd}")
+        t = int(period[b])
+        npv += d[t] * float(inst.value[b, dd])
+        use[:, t] += inst.coef[:, b, dd]
+    return float(npv), use
+
+
+def _check_feasible(inst: Pcpsp, prec: Precedence, period: np.ndarray, dest: np.ndarray) -> None:
+    _, use = pcpsp_schedule_value(inst, period, dest)
+    limit = np.asarray(inst.limit, dtype=np.float64)
+    if (use > limit * (1 + 1e-9) + 1e-6).any():
+        raise AssertionError("destination schedule exceeds a capacity")
+    for b in np.nonzero(period >= 0)[0]:
+        for k in range(prec.pstart[b], prec.pstart[b + 1]):
+            a = int(prec.plist[k])
+            if period[a] < 0 or period[a] > period[b]:
+                raise AssertionError(f"block {b} is mined before its predecessor {a}")
+
+
 def destination_toposort(
     inst: Pcpsp,
     prec: Precedence,
     *,
     grade: np.ndarray | None = None,
     weight: np.ndarray | None = None,
+    allowed: np.ndarray | None = None,
 ) -> DestinationSchedule:
     """Destination-aware TopoSort: the cutoff grade becomes an output of the schedule.
 
-    Walk a weighted topological ordering as in CPIT, but at each block choose the destination that
-    maximises discounted value among those whose remaining resources still fit. When the plant is
-    full the block falls to the dump, so the effective cutoff rises in exactly the periods where
-    processing binds. Feasibility is by construction for the resource rows; general side constraints
-    (blending) are NOT enforced here.
+    Walk a weighted topological ordering as in CPIT. For each destination of a block find the
+    EARLIEST period, not before any predecessor, whose remaining resources take the block at that
+    destination; then keep the destination whose discounted value at its own earliest period is the
+    largest. An ore block therefore WAITS for the plant when the plant is worth more a period later
+    than the dump is now, and falls to the dump when it is not, so the effective cutoff moves with
+    the schedule instead of being a number decided in advance. Feasibility for the resource rows is
+    by construction; general side constraints (blending) are NOT enforced here.
+
+    Pass the LP expected extraction times as ``weight=-E_b`` for the ExTS ordering. The default is
+    the best-destination value, which makes this greedy TopoSort with a destination choice; before
+    0.6.0 that default, together with a rule that took the first period where ANY destination fitted
+    (so ore went to the dump the moment the plant was full), produced plans below the
+    fixed-destination CPIT plan on every case a downstream product tried, although choosing the
+    destination is the richer problem.
     """
     n, t_max, n_dest = inst.n_blocks, inst.n_periods, inst.n_destinations
     d = _discount(inst)
     _, best_val = inst.best_destination()
-    cpit_like = inst.to_cpit()
-    allowed = solve_upit(_finite_values(cpit_like), prec).in_pit
+    if allowed is None:
+        cpit_like = inst.to_cpit()
+        allowed = solve_upit(_finite_values(cpit_like), prec).in_pit
 
     if weight is None:
         weight = best_val.astype(np.float64)
@@ -98,7 +173,6 @@ def destination_toposort(
     remaining = np.array(inst.limit, dtype=np.float64).copy()
     period = np.full(n, -1, dtype=np.int64)
     dest = np.full(n, -1, dtype=np.int64)
-    npv = 0.0
 
     for b in order:
         earliest, blocked = 0, False
@@ -114,34 +188,22 @@ def destination_toposort(
             continue
 
         placed, chosen, best = -1, -1, -np.inf
-        for t in range(earliest, t_max):
-            for dd in range(n_dest):
-                if inst.forbidden[b, dd]:
-                    continue
-                need = [inst.coef[r][b, dd] for r in range(inst.n_resources)]
-                if any(remaining[r, t] < need[r] - 1e-9 for r in range(inst.n_resources)):
-                    continue
-                val = d[t] * float(inst.value[b, dd])
-                if val > best:
-                    best, placed, chosen = val, t, dd
-            if placed >= 0:
-                break  # earliest feasible period wins; within it the best destination
+        for dd in range(n_dest):
+            if inst.forbidden[b, dd]:
+                continue
+            need = inst.coef[:, b, dd]
+            for t in range(earliest, t_max):
+                if all(remaining[r, t] >= need[r] - 1e-9 for r in range(inst.n_resources)):
+                    val = d[t] * float(inst.value[b, dd])
+                    if val > best:
+                        best, placed, chosen = val, t, dd
+                    break  # the earliest period for THIS destination
         if placed < 0:
             continue
         period[b], dest[b] = placed, chosen
-        npv += best
-        for r in range(inst.n_resources):
-            remaining[r, placed] -= inst.coef[r][b, chosen]
+        remaining[:, placed] -= inst.coef[:, b, chosen]
 
-    # the effective cutoff: the lowest grade actually sent to a processing destination per period
-    cutoff = np.full(t_max, np.nan)
-    if grade is not None:
-        proc = int(np.argmax([inst.coef[min(1, inst.n_resources - 1)][:, dd].sum() for dd in range(n_dest)]))
-        for t in range(t_max):
-            sel = (period == t) & (dest == proc)
-            if sel.any():
-                cutoff[t] = float(grade[sel].min())
-
+    npv, _ = pcpsp_schedule_value(inst, period, dest)
     return DestinationSchedule(
         method="pcpsp-destination-toposort",
         period_of_block=period,
@@ -149,8 +211,348 @@ def destination_toposort(
         npv=float(npv),
         mined_blocks=int((period >= 0).sum()),
         exact=False,
-        effective_cutoff=cutoff,
-        notes="destination chosen per block against the remaining capacity; the cutoff is an output",
+        effective_cutoff=_effective_cutoff(inst, period, dest, grade),
+        notes="per destination the earliest period that fits, then the best discounted destination",
+    )
+
+
+def lift_to_pcpsp(
+    inst: Pcpsp, prec: Precedence, period_of_block: np.ndarray, *, grade: np.ndarray | None = None
+) -> DestinationSchedule:
+    """A fixed-destination (CPIT) plan read as a PCPSP plan: every mined block at its best destination.
+
+    ``Pcpsp.to_cpit`` builds the CPIT instance from exactly these destinations, values and resource
+    coefficients, so a plan feasible for that CPIT is feasible here with the same objective. A PCPSP
+    method that starts from it cannot end below the CPIT plan, which is the property the richer
+    problem has to show.
+    """
+    best_dest, _ = inst.best_destination()
+    period = np.asarray(period_of_block, dtype=np.int64).copy()
+    dest = np.where(period >= 0, best_dest, -1).astype(np.int64)
+    _check_feasible(inst, prec, period, dest)
+    npv, _ = pcpsp_schedule_value(inst, period, dest)
+    return DestinationSchedule(
+        method="cpit-lifted",
+        period_of_block=period,
+        destination_of_block=dest,
+        npv=npv,
+        mined_blocks=int((period >= 0).sum()),
+        exact=False,
+        effective_cutoff=_effective_cutoff(inst, period, dest, grade),
+        notes="a fixed-destination plan with every block at its a-priori best destination",
+    )
+
+
+def exact_destination_local_search(
+    inst: Pcpsp,
+    prec: Precedence,
+    start: DestinationSchedule,
+    *,
+    d_max: int = 160,
+    rounds: int = 16,
+    seed: int = 11,
+    time_limit: float | None = None,
+    mip_gap: float = 1e-4,
+    grade: np.ndarray | None = None,
+) -> DestinationSchedule:
+    """OPBSP-[D]: the exact restricted re-solve of Chicoisne et al. section 3.3, with destinations.
+
+    The C-PIT[D] neighbourhoods (a block and a connected set of its predecessors, the same with
+    successors, or the blocks of three consecutive periods), but the restricted model decides the
+    PERIOD and the DESTINATION of every free block jointly, with binary destinations as in OPBSP
+    (Jelvez, Morales and Nancel-Penard 2018, section 2.2). Fixed blocks keep both and keep their
+    resources. Variables per free block ``i``: ``y_it`` (mined by the end of ``t``) and ``z_idt``
+    (mined in ``t`` and sent to ``d``), linked by ``sum_d z_idt = y_it - y_i,t-1``. Every accepted
+    move is a proven improvement of the restricted problem, so the objective is monotone and the
+    result is never below ``start``.
+
+    ``time_limit=None`` stops each re-solve on the relative MIP gap alone, so a bake is reproducible
+    from (instance, seed) and not from the speed of the machine.
+    """
+    from scipy.optimize import LinearConstraint, milp
+    from scipy.sparse import coo_matrix
+
+    from .refine import _neighbourhood  # noqa: PLC2701 - the same neighbourhoods as C-PIT[D]
+    from .schedule import _successors  # noqa: PLC2701
+
+    n, t_max, n_dest, n_res = inst.n_blocks, inst.n_periods, inst.n_destinations, inst.n_resources
+    disc = _discount(inst)
+    sstart, slist = _successors(prec, n)
+    rng = np.random.default_rng(seed)
+    value = np.where(inst.forbidden, 0.0, np.nan_to_num(inst.value, neginf=0.0, posinf=0.0))
+
+    period = start.period_of_block.copy()
+    dest = start.destination_of_block.copy()
+    _check_feasible(inst, prec, period, dest)
+    npv_now, _ = pcpsp_schedule_value(inst, period, dest)
+    accepted = 0
+
+    for _ in range(rounds):
+        dset = _neighbourhood(rng, prec, sstart, slist, period, d_max)
+        if dset.size < 4:
+            continue
+        pos = {int(b): i for i, b in enumerate(dset)}
+        k = int(dset.size)
+        ny = k * t_max
+        n_var = ny + k * n_dest * t_max
+
+        def yv(i: int, t: int, _t_max: int = t_max) -> int:
+            return i * _t_max + t
+
+        def zv(i: int, dd: int, t: int, _ny: int = ny, _t_max: int = t_max) -> int:
+            return _ny + (i * n_dest + dd) * _t_max + t
+
+        used = np.zeros((n_res, t_max))
+        free = np.zeros(n, dtype=bool)
+        free[dset] = True
+        for b in np.nonzero((period >= 0) & ~free)[0]:
+            used[:, period[b]] += inst.coef[:, b, dest[b]]
+
+        c = np.zeros(n_var)
+        lb = np.zeros(n_var)
+        ub = np.ones(n_var)
+        for i, b in enumerate(dset):
+            for dd in range(n_dest):
+                for t in range(t_max):
+                    if inst.forbidden[b, dd]:
+                        ub[zv(i, dd, t)] = 0.0
+                    else:
+                        c[zv(i, dd, t)] = -disc[t] * float(value[b, dd])
+
+        rows: list[int] = []
+        cols: list[int] = []
+        data: list[float] = []
+        lo: list[float] = []
+        hi: list[float] = []
+
+        def add(entries, low, high, _rows=rows, _cols=cols, _data=data, _lo=lo, _hi=hi):
+            r = len(_lo)
+            for j, val in entries:
+                _rows.append(r)
+                _cols.append(j)
+                _data.append(val)
+            _lo.append(low)
+            _hi.append(high)
+
+        for i, b in enumerate(dset):
+            for t in range(t_max):
+                if t + 1 < t_max:
+                    add([(yv(i, t), 1.0), (yv(i, t + 1), -1.0)], -np.inf, 0.0)
+                link = [(zv(i, dd, t), 1.0) for dd in range(n_dest)] + [(yv(i, t), -1.0)]
+                if t > 0:
+                    link.append((yv(i, t - 1), 1.0))
+                add(link, 0.0, 0.0)
+            for kk in range(prec.pstart[b], prec.pstart[b + 1]):
+                a = int(prec.plist[kk])
+                if a in pos:
+                    for t in range(t_max):
+                        add([(yv(i, t), 1.0), (yv(pos[a], t), -1.0)], -np.inf, 0.0)
+                elif period[a] < 0:
+                    ub[yv(i, 0) : yv(i, 0) + t_max] = 0.0
+                else:
+                    for t in range(int(period[a])):
+                        ub[yv(i, t)] = 0.0
+            for kk in range(sstart[b], sstart[b + 1]):
+                cblk = int(slist[kk])
+                if cblk in pos or period[cblk] < 0:
+                    continue
+                lb[yv(i, int(period[cblk]))] = 1.0
+        if (lb > ub).any():
+            continue
+
+        for rr in range(n_res):
+            for t in range(t_max):
+                entries = [
+                    (zv(i, dd, t), float(inst.coef[rr, b, dd]))
+                    for i, b in enumerate(dset)
+                    for dd in range(n_dest)
+                    if inst.coef[rr, b, dd]
+                ]
+                if entries:
+                    add(entries, -np.inf, float(inst.limit[rr][t] - used[rr, t]))
+
+        a_mat = coo_matrix((data, (rows, cols)), shape=(len(lo), n_var)).tocsr()
+        options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
+        if time_limit is not None:
+            options["time_limit"] = time_limit
+        try:
+            res = milp(
+                c=c,
+                constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
+                integrality=np.ones(n_var),
+                bounds=(lb, ub),
+                options=options,
+            )
+        except Exception:  # noqa: BLE001 - a solver failure must never lose the incumbent
+            continue
+        if not res.success or res.x is None:
+            continue
+
+        x = np.asarray(res.x)
+        cand_p, cand_d = period.copy(), dest.copy()
+        for i, b in enumerate(dset):
+            cand_p[b], cand_d[b] = -1, -1
+            for t in range(t_max):
+                hit = [dd for dd in range(n_dest) if x[zv(i, dd, t)] > 0.5]
+                if hit:
+                    cand_p[b], cand_d[b] = t, hit[0]
+                    break
+        try:
+            _check_feasible(inst, prec, cand_p, cand_d)
+        except AssertionError:
+            continue
+        npv_new, _ = pcpsp_schedule_value(inst, cand_p, cand_d)
+        if npv_new > npv_now + 1e-9 * max(1.0, abs(npv_now)):
+            period, dest, npv_now = cand_p, cand_d, npv_new
+            accepted += 1
+
+    if npv_now < start.npv - 1e-6 * max(1.0, abs(start.npv)):
+        raise AssertionError(f"destination local search made it worse: {start.npv} -> {npv_now}")
+    return DestinationSchedule(
+        method=f"{start.method}+opbspD-ls",
+        period_of_block=period,
+        destination_of_block=dest,
+        npv=float(npv_now),
+        mined_blocks=int((period >= 0).sum()),
+        exact=False,
+        effective_cutoff=_effective_cutoff(inst, period, dest, grade),
+        notes=f"{accepted} of {rounds} exact OPBSP-[D] re-solves improved the incumbent",
+    )
+
+
+@dataclass(frozen=True)
+class PcpspBound:
+    """The PCPSP LP relaxation: an upper bound on every destination schedule of the instance."""
+
+    bound: float
+    seconds: float
+    n_variables: int
+    n_rows: int
+    status: str
+
+
+def pcpsp_lp_bound(
+    inst: Pcpsp, prec: Precedence, *, max_rows: int = 1_500_000, time_limit: float | None = None
+) -> PcpspBound | None:
+    """Solve the PCPSP LP relaxation with HiGHS. ``None`` when the model is above ``max_rows``.
+
+    The MineLib PCPSP model (Espinoza, Goycoolea, Moreno and Newman 2013,
+    doi:10.1007/s10479-012-1258-3) with every integrality relaxed: cumulative extraction ``x_bt`` in
+    [0, 1], monotone in ``t`` and closed under precedence in every period, destination fractions
+    ``y_bdt >= 0`` with ``sum_d y_bdt = x_bt - x_b,t-1``, and per-period resource rows over ``y``.
+    Every block of the file is kept: no ultimate-pit reduction is applied, because the bound must
+    hold for the problem as stated and that reduction is proven for CPIT, not assumed here for PCPSP.
+
+    The value is a bound to the solver's optimality tolerances; it is reported with its status, and
+    a schedule above it is a defect of one of the two.
+    """
+    import time
+
+    from scipy.optimize import linprog
+    from scipy.sparse import coo_matrix
+
+    n, t_max, n_dest, n_res = inst.n_blocks, inst.n_periods, inst.n_destinations, inst.n_resources
+    nx = n * t_max
+    n_var = nx + n * n_dest * t_max
+    n_rows = n * (t_max - 1) + int(prec.n_arcs) * t_max + n * t_max + n_res * t_max
+    if n_rows > max_rows:
+        return None
+    disc = _discount(inst)
+    value = np.where(inst.forbidden, 0.0, np.nan_to_num(inst.value, neginf=0.0, posinf=0.0))
+
+    blocks = np.arange(n, dtype=np.int64)
+    c = np.zeros(n_var)
+    ub = np.ones(n_var)
+    for dd in range(n_dest):
+        bad = np.nonzero(inst.forbidden[:, dd])[0]
+        for t in range(t_max):
+            c[nx + (blocks * n_dest + dd) * t_max + t] = -disc[t] * value[:, dd]
+            ub[nx + (bad * n_dest + dd) * t_max + t] = 0.0
+
+    ub_rows: list[np.ndarray] = []
+    ub_cols: list[np.ndarray] = []
+    ub_data: list[np.ndarray] = []
+    ub_rhs: list[np.ndarray] = []
+    row = 0
+    # monotone: x_bt - x_b,t+1 <= 0
+    for t in range(t_max - 1):
+        rws = np.arange(row, row + n)
+        ub_rows += [rws, rws]
+        ub_cols += [blocks * t_max + t, blocks * t_max + t + 1]
+        ub_data += [np.ones(n), -np.ones(n)]
+        row += n
+    ub_rhs.append(np.zeros(n * (t_max - 1)))
+    # precedence in every period: x_bt - x_at <= 0
+    owner = np.repeat(blocks, np.diff(prec.pstart))
+    pred = prec.plist.astype(np.int64)
+    m = owner.shape[0]
+    for t in range(t_max):
+        rws = np.arange(row, row + m)
+        ub_rows += [rws, rws]
+        ub_cols += [owner * t_max + t, pred * t_max + t]
+        ub_data += [np.ones(m), -np.ones(m)]
+        row += m
+    ub_rhs.append(np.zeros(m * t_max))
+    # resources: sum_{b,d} q_rbd y_bdt <= c_rt
+    for rr in range(n_res):
+        for t in range(t_max):
+            for dd in range(n_dest):
+                q = np.asarray(inst.coef[rr][:, dd], dtype=np.float64)
+                nz = np.nonzero(q)[0]
+                ub_rows.append(np.full(nz.size, row))
+                ub_cols.append(nx + (nz * n_dest + dd) * t_max + t)
+                ub_data.append(q[nz])
+            ub_rhs.append(np.array([float(inst.limit[rr][t])]))
+            row += 1
+    a_ub = coo_matrix(
+        (np.concatenate(ub_data), (np.concatenate(ub_rows), np.concatenate(ub_cols))), shape=(row, n_var)
+    ).tocsr()
+    b_ub = np.concatenate(ub_rhs)
+
+    # linking: sum_d y_bdt - x_bt + x_b,t-1 = 0
+    eq_rows: list[np.ndarray] = []
+    eq_cols: list[np.ndarray] = []
+    eq_data: list[np.ndarray] = []
+    erow = 0
+    for t in range(t_max):
+        rws = np.arange(erow, erow + n)
+        for dd in range(n_dest):
+            eq_rows.append(rws)
+            eq_cols.append(nx + (blocks * n_dest + dd) * t_max + t)
+            eq_data.append(np.ones(n))
+        eq_rows.append(rws)
+        eq_cols.append(blocks * t_max + t)
+        eq_data.append(-np.ones(n))
+        if t > 0:
+            eq_rows.append(rws)
+            eq_cols.append(blocks * t_max + t - 1)
+            eq_data.append(np.ones(n))
+        erow += n
+    a_eq = coo_matrix(
+        (np.concatenate(eq_data), (np.concatenate(eq_rows), np.concatenate(eq_cols))), shape=(erow, n_var)
+    ).tocsr()
+
+    options: dict = {"presolve": True}
+    if time_limit is not None:
+        options["time_limit"] = time_limit
+    t0 = time.perf_counter()
+    res = linprog(
+        c,
+        A_ub=a_ub,
+        b_ub=b_ub,
+        A_eq=a_eq,
+        b_eq=np.zeros(erow),
+        bounds=np.stack([np.zeros(n_var), ub], 1),
+        method="highs",
+        options=options,
+    )
+    seconds = time.perf_counter() - t0
+    if res.status != 0:
+        return PcpspBound(
+            bound=float("nan"), seconds=seconds, n_variables=n_var, n_rows=row + erow, status=str(res.message)
+        )
+    return PcpspBound(
+        bound=float(-res.fun), seconds=seconds, n_variables=n_var, n_rows=row + erow, status="optimal"
     )
 
 
@@ -264,12 +666,7 @@ def solve_opbsp_exact(
             if period[b] >= 0:
                 break
 
-    cutoff = np.full(t_max, np.nan)
-    if grade is not None and n_dest > 1:
-        for t in range(t_max):
-            sel = (period == t) & (dest == 1)
-            if sel.any():
-                cutoff[t] = float(grade[sel].min())
+    cutoff = _effective_cutoff(inst, period, dest, grade)
 
     return DestinationSchedule(
         method="opbsp-exact(milp)",
