@@ -248,6 +248,49 @@ def test_expected_time_weighting_beats_the_greedy_baseline():
     assert expected.npv > greedy.npv
 
 
+def _brute_force_successor_sums(prec, values):
+    """The definition, written the slow way: collect the successor SET, then sum it once."""
+    n = values.shape[0]
+    succ = [[] for _ in range(n)]
+    for b in range(n):
+        for p in prec.preds(b):
+            succ[int(p)].append(b)
+    out = np.zeros(n)
+    for b in range(n):
+        seen, stack = set(), list(succ[b])
+        while stack:
+            c = stack.pop()
+            if c in seen:
+                continue
+            seen.add(c)
+            stack.extend(succ[c])
+        out[b] = sum(values[c] for c in seen)
+    return out
+
+
+def test_gershon_weight_counts_each_successor_once():
+    """A diamond: the bottom block is reachable from the top along two paths and must count once.
+
+    The first implementation summed accumulated weights and counted it twice; on a 45 degree cone with
+    nine arcs per block the multiplicity grows geometrically with depth.
+    """
+    # 0 on top; 1 and 2 below it; 3 below both. Arcs are (block requires predecessor).
+    prec = ob.Precedence(
+        pstart=np.array([0, 0, 1, 2, 4], dtype=np.int64), plist=np.array([0, 0, 1, 2], dtype=np.int64)
+    )
+    values = np.array([-1.0, 2.0, 3.0, 10.0])
+    w = ob.schedule._successor_profit_sums(prec, values)
+    assert w.tolist() == [15.0, 10.0, 10.0, 0.0]
+
+
+def test_gershon_weight_matches_the_set_definition_on_a_real_cone():
+    twin = _twin(dims=(7, 7, 5))
+    values = twin.values.astype(float)
+    got = ob.schedule._successor_profit_sums(twin.precedence, values)
+    want = _brute_force_successor_sums(twin.precedence, values)
+    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-6)
+
+
 def test_never_mines_outside_the_ultimate_pit():
     twin = _twin()
     inst = _cpit_from_twin(twin, periods=4)
