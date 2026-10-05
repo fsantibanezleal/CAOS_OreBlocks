@@ -459,6 +459,8 @@ class PcpspBound:
 
     bound: float
     seconds: float
+    #: size of the PCPSP LP, whichever method produced the bound: the Lagrangian path reports the LP
+    #: its dual stands for, not its closure graph (``n T`` nodes, the precedence and monotonicity arcs)
     n_variables: int
     n_rows: int
     status: str
@@ -479,6 +481,14 @@ class PcpspBound:
             raise ValueError("solve the bound with solution=True to read its destinations")
         mined = self.destination_share.sum(axis=1) > 0
         return np.where(mined, self.destination_share.argmax(axis=1), -1).astype(np.int64)
+
+
+def _pcpsp_lp_size(inst: Pcpsp, prec: Precedence) -> tuple[int, int]:
+    """Variables and rows of the PCPSP LP: x and y; monotonicity, precedence, linking, resources."""
+    n, t_max = inst.n_blocks, inst.n_periods
+    n_var = n * t_max * (1 + inst.n_destinations)
+    n_rows = n * (t_max - 1) + int(prec.n_arcs) * t_max + n * t_max + inst.n_resources * t_max
+    return n_var, n_rows
 
 
 def pcpsp_lp_bound(
@@ -508,8 +518,7 @@ def pcpsp_lp_bound(
 
     n, t_max, n_dest, n_res = inst.n_blocks, inst.n_periods, inst.n_destinations, inst.n_resources
     nx = n * t_max
-    n_var = nx + n * n_dest * t_max
-    n_rows = n * (t_max - 1) + int(prec.n_arcs) * t_max + n * t_max + n_res * t_max
+    n_var, n_rows = _pcpsp_lp_size(inst, prec)
     if n_rows > max_rows:
         return None
     disc = _discount(inst)
@@ -774,9 +783,10 @@ def pcpsp_lagrangian_bound(
         bs = np.nonzero(inc[t])[0]
         expected[bs] = t + 1.0
         share[bs, best_d[t, bs]] = 1.0
+    n_var, n_rows = _pcpsp_lp_size(inst, prec)
     return PcpspBound(
-        bound=float(best[0]), seconds=time.perf_counter() - t0, n_variables=n * t_max,
-        n_rows=int(graph.plist.shape[0]), status=status, expected_time=expected, destination_share=share,
+        bound=float(best[0]), seconds=time.perf_counter() - t0, n_variables=n_var,
+        n_rows=n_rows, status=status, expected_time=expected, destination_share=share,
         method="lagrangian", iterations=iterations,
         gap_estimate=float((best[0] - model) / abs(best[0])) if best[0] else 0.0, slack=slack,
     )

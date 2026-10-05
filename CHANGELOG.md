@@ -28,7 +28,9 @@ Display version `0.06.001`. One defect, found by solving the integer problem exa
   not finish two 1.44-million-row instances in six and a half hours). Valid at every iteration (the
   compiled closure rounds up), within the rounding slack of the LP once converged (4.8 parts per million on
   a 6,912-block twin, in 166 s against about 18 minutes), and it returns the relaxed schedule's
-  destinations for the re-cut. `PcpspBound` gains `method`, `iterations`, `gap_estimate` and `slack`.
+  destinations for the re-cut. `PcpspBound` gains `method`, `iterations`, `gap_estimate` and `slack`;
+  its `n_variables` and `n_rows` are the size of the PCPSP LP under either method, so the Lagrangian
+  path reports the LP it stands for and not its closure graph.
 - Tests: the LP solution fields; the restriction refuses a forbidden destination; the re-cut plan is
   feasible, under the PCPSP LP, and above 1.15 times the fixed-cutoff plan on a plant-bound twin; the
   Lagrangian bound meets the LP within its slack, is valid when stopped after three iterations, respects

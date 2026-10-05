@@ -339,6 +339,7 @@ def test_pcpsp_lagrangian_bound_meets_the_lp_and_is_valid_at_any_iteration():
     assert lg.method == "lagrangian" and lg.status == "converged"
     assert lg.bound >= lp.bound * (1 - 1e-9)
     assert lg.bound <= lp.bound + 2 * lg.slack + 1e-5 * abs(lp.bound)
+    assert (lg.n_variables, lg.n_rows) == (lp.n_variables, lp.n_rows), "both report the size of the LP"
     early = ob.pcpsp_lagrangian_bound(inst, twin.precedence, max_iter=3)
     assert early.bound >= lp.bound * (1 - 1e-9), "a bound stopped early is looser, never wrong"
 
