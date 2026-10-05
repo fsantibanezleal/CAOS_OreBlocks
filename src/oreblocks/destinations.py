@@ -35,7 +35,7 @@ rather than hidden.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -52,6 +52,7 @@ __all__ = [
     "lift_to_pcpsp",
     "pcpsp_lp_bound",
     "pcpsp_schedule_value",
+    "restrict_destinations",
     "solve_opbsp_exact",
 ]
 
@@ -243,6 +244,31 @@ def lift_to_pcpsp(
     )
 
 
+def restrict_destinations(inst: Pcpsp, dest: np.ndarray) -> Pcpsp:
+    """The same instance with each block allowed only the destination ``dest`` names (-1: all kept).
+
+    With ``dest = PcpspBound.preferred_destination()`` this is the RE-CUT: the cutoff the PCPSP
+    relaxation chooses, fixed, after which ``to_cpit()`` gives a CPIT whose plans are PCPSP plans of
+    the original instance with the same value. That CPIT is then scheduled by the full CPIT machinery
+    (its own critical-multiplier relaxations, ExTS, the sliding window). It is the cutoff-then-schedule
+    sequence of practice, with the cutoff taken from the relaxation instead of decided in advance:
+    the relaxation knows the opportunity cost of the plant, and a comparison of a block's two values
+    does not (a marginal ore block's plant value is positive and its dump value negative, so that
+    comparison always sends it to the plant, even when the plant tonnage it takes is worth more to the
+    richer ore below it).
+    """
+    dest = np.asarray(dest, dtype=np.int64)
+    if dest.shape != (inst.n_blocks,):
+        raise ValueError(f"need one destination per block, got shape {dest.shape}")
+    forbidden = inst.forbidden.copy()
+    chosen = np.nonzero(dest >= 0)[0]
+    if (dest[chosen] >= inst.n_destinations).any() or inst.forbidden[chosen, dest[chosen]].any():
+        raise ValueError("a block is restricted to a destination it may not use")
+    forbidden[chosen, :] = True
+    forbidden[chosen, dest[chosen]] = False
+    return replace(inst, name=f"{inst.name}-recut", forbidden=forbidden)
+
+
 def exact_destination_local_search(
     inst: Pcpsp,
     prec: Precedence,
@@ -422,17 +448,37 @@ def exact_destination_local_search(
 
 @dataclass(frozen=True)
 class PcpspBound:
-    """The PCPSP LP relaxation: an upper bound on every destination schedule of the instance."""
+    """The PCPSP LP relaxation: an upper bound on every destination schedule of the instance.
+
+    With ``solution=True`` it also carries what the relaxation says about the plan, the way the CPIT
+    relaxation seeds ExTS: each block's expected extraction time ``E_b`` (``T + 1`` for a block the
+    LP never mines) and the share of the mined part of each block that the LP sends to each
+    destination.
+    """
 
     bound: float
     seconds: float
     n_variables: int
     n_rows: int
     status: str
+    expected_time: np.ndarray | None = None  # float64 (n,)
+    destination_share: np.ndarray | None = None  # float64 (n, D), rows sum to 1 where the LP mines
+
+    def preferred_destination(self) -> np.ndarray:
+        """The destination the relaxation sends most of each block to; -1 where it mines none of it."""
+        if self.destination_share is None:
+            raise ValueError("solve the bound with solution=True to read its destinations")
+        mined = self.destination_share.sum(axis=1) > 0
+        return np.where(mined, self.destination_share.argmax(axis=1), -1).astype(np.int64)
 
 
 def pcpsp_lp_bound(
-    inst: Pcpsp, prec: Precedence, *, max_rows: int = 1_500_000, time_limit: float | None = None
+    inst: Pcpsp,
+    prec: Precedence,
+    *,
+    max_rows: int = 1_500_000,
+    time_limit: float | None = None,
+    solution: bool = False,
 ) -> PcpspBound | None:
     """Solve the PCPSP LP relaxation with HiGHS. ``None`` when the model is above ``max_rows``.
 
@@ -551,8 +597,18 @@ def pcpsp_lp_bound(
         return PcpspBound(
             bound=float("nan"), seconds=seconds, n_variables=n_var, n_rows=row + erow, status=str(res.message)
         )
+    expected = share = None
+    if solution:
+        x = np.clip(np.asarray(res.x[:nx]).reshape(n, t_max), 0.0, 1.0)
+        y = np.clip(np.asarray(res.x[nx:]).reshape(n, n_dest, t_max), 0.0, None)
+        prev = np.concatenate([np.zeros((n, 1)), x[:, :-1]], axis=1)
+        expected = ((x - prev) * np.arange(1, t_max + 1)).sum(axis=1) + (t_max + 1) * (1.0 - x[:, -1])
+        sent = y.sum(axis=2)
+        total = sent.sum(axis=1, keepdims=True)
+        share = np.divide(sent, total, out=np.zeros_like(sent), where=total > 1e-9)
     return PcpspBound(
-        bound=float(-res.fun), seconds=seconds, n_variables=n_var, n_rows=row + erow, status="optimal"
+        bound=float(-res.fun), seconds=seconds, n_variables=n_var, n_rows=row + erow, status="optimal",
+        expected_time=expected, destination_share=share,
     )
 
 

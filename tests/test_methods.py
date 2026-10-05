@@ -9,6 +9,8 @@ amount of plausible-looking output will say which.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -244,6 +246,88 @@ def test_destination_toposort_is_cpit_toposort_when_the_plant_never_binds():
     np.testing.assert_array_equal(dest.period_of_block, fixed.period_of_block)
     assert dest.npv == pytest.approx(fixed.npv, rel=1e-9)
     _assert_destination_plan_feasible(roomy, twin.precedence, dest)
+
+
+def test_pcpsp_lp_solution_carries_expected_times_and_destinations():
+    twin, inst = _pcpsp(dims=(8, 8, 5), periods=4)
+    plain = ob.pcpsp_lp_bound(inst, twin.precedence)
+    assert plain.expected_time is None and plain.destination_share is None
+    with pytest.raises(ValueError):
+        plain.preferred_destination()
+    lp = ob.pcpsp_lp_bound(inst, twin.precedence, solution=True)
+    assert lp.bound == pytest.approx(plain.bound, rel=1e-9)
+    n, t = inst.n_blocks, inst.n_periods
+    assert lp.expected_time.shape == (n,) and lp.destination_share.shape == (n, 2)
+    assert (lp.expected_time >= 1 - 1e-9).all() and (lp.expected_time <= t + 1 + 1e-9).all()
+    rows = lp.destination_share.sum(axis=1)
+    assert np.all((np.abs(rows - 1) < 1e-9) | (rows == 0)), "a mined block's shares sum to one"
+    pref = lp.preferred_destination()
+    assert set(np.unique(pref)) <= {-1, 0, 1}
+    assert ((pref == -1) == (rows == 0)).all()
+
+
+def test_restrict_destinations_keeps_one_destination_and_refuses_a_forbidden_one():
+    twin, inst = _pcpsp(dims=(8, 8, 5), periods=4)
+    dest = np.where(np.arange(inst.n_blocks) % 2 == 0, 0, 1)
+    dest[:3] = -1
+    cut = ob.restrict_destinations(inst, dest)
+    assert not cut.forbidden[:3].any(), "-1 keeps every destination"
+    rows = np.arange(3, inst.n_blocks)
+    assert (~cut.forbidden[rows, dest[rows]]).all()
+    assert cut.forbidden[rows, 1 - dest[rows]].all()
+    np.testing.assert_array_equal(cut.to_cpit().value[rows], inst.value[rows, dest[rows]])
+    with pytest.raises(ValueError):
+        ob.restrict_destinations(cut, np.where(dest >= 0, 1 - dest, -1))
+    with pytest.raises(ValueError):
+        ob.restrict_destinations(inst, dest[:-1])
+
+
+def _pcpsp_plant_bound(dims=(9, 9, 5), periods=6):
+    """Twin economics: dump at minus the mining cost, plant at recovered revenue less processing,
+    and a plant that takes half of the pit's ORE tonnage over the horizon, so which ore it gets is
+    the decision. (In ``_pcpsp`` the plant limit is a share of all in-pit tonnage, waste included,
+    so ore never competes for it and the destination choice is worth almost nothing.)"""
+    twin = ob.make_twin("porphyry", dims=dims, seed=4)
+    dep, e = twin.deposit, twin.econ
+    ton = dep.tonnage
+    waste = -e.mining_cost * ton
+    plant = (dep.grade * e.recovery * e.price - e.processing_cost) * ton + waste
+    n = ton.size
+    coef = np.zeros((2, n, 2))
+    coef[0] = ton[:, None]
+    coef[1, :, 1] = ton
+    ore = (plant > waste) & twin.upit.in_pit
+    lim = np.array([
+        [0.8 * float(ton[twin.upit.in_pit].sum()) / periods] * periods,
+        [0.5 * float(ton[ore].sum()) / periods] * periods,
+    ])
+    inst = ob.Pcpsp(
+        name="plant-bound", n_blocks=n, n_periods=periods, n_destinations=2, discount_rate=0.10,
+        value=np.stack([waste, plant], axis=1), forbidden=np.zeros((n, 2), dtype=bool), limit=lim,
+        sense=np.full((2, periods), "L", dtype="<U1"), coef=coef,
+    )
+    return twin, inst
+
+
+def test_recut_on_the_lp_destinations_beats_the_fixed_cutoff_when_the_plant_binds():
+    """Fixed in advance, every block whose plant value beats its dump value must take plant tonnage
+    when mined. The relaxation dumps marginal ore to keep the plant for richer ore below it, and the
+    plan scheduled on its destinations must show that value, feasibly and under its own bound.
+    Measured at 1.25 to 1.35 times the fixed-cutoff plan on three sizes of this deposit."""
+    twin, inst = _pcpsp_plant_bound()
+    prec = twin.precedence
+    lp = ob.pcpsp_lp_bound(inst, prec, solution=True)
+    fixed = ob.toposort_schedule(inst.to_cpit(), prec, weight="expected")
+    lifted = ob.lift_to_pcpsp(inst, prec, fixed.period_of_block)
+    cut = ob.restrict_destinations(inst, lp.preferred_destination())
+    cpit = cut.to_cpit()
+    plan = ob.toposort_schedule(cpit, prec, weight="expected")
+    recut = ob.lift_to_pcpsp(cut, prec, plan.period_of_block)
+    value, _ = ob.pcpsp_schedule_value(inst, recut.period_of_block, recut.destination_of_block)
+    assert value == pytest.approx(recut.npv, rel=1e-9), "a re-cut plan is a plan of the original instance"
+    _assert_destination_plan_feasible(inst, prec, dataclasses.replace(recut, npv=value))
+    assert value <= lp.bound * (1 + 1e-7)
+    assert value > lifted.npv * 1.15, f"re-cut {value:,.0f} against the fixed cutoff {lifted.npv:,.0f}"
 
 
 def test_opbsp_returns_none_rather_than_faking_an_exact_answer():

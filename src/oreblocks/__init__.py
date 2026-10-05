@@ -12,7 +12,7 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
@@ -24,6 +24,7 @@ from .destinations import (
     lift_to_pcpsp,
     pcpsp_lp_bound,
     pcpsp_schedule_value,
+    restrict_destinations,
     solve_opbsp_exact,
 )
 from .economics import Econ, block_values, cutoff_grade, is_ore
@@ -134,6 +135,7 @@ __all__ = [
     "lift_to_pcpsp",
     "pcpsp_lp_bound",
     "pcpsp_schedule_value",
+    "restrict_destinations",
     "PcpspBound",
     "enforce_min_width",
     "evaluate_across",
