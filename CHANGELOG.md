@@ -23,8 +23,16 @@ Display version `0.06.001`. One defect, found by solving the integer problem exa
   machinery. Measured: 10.15 M with the sliding window on the 320-block twin above, and 34.81 M after
   the destination local search on a 1,008-block one, against 26.78 M for the best fixed-cutoff plan and
   a PCPSP LP of 36.03 M.
+- `pcpsp_lagrangian_bound`: the PCPSP LP bound through its Lagrangian dual, a maximum closure on the
+  time-expanded graph per multiplier vector, for instances where the direct LP is out of reach (HiGHS did
+  not finish two 1.44-million-row instances in six and a half hours). Valid at every iteration (the
+  compiled closure rounds up), within the rounding slack of the LP once converged (4.8 parts per million on
+  a 6,912-block twin, in 166 s against about 18 minutes), and it returns the relaxed schedule's
+  destinations for the re-cut. `PcpspBound` gains `method`, `iterations`, `gap_estimate` and `slack`.
 - Tests: the LP solution fields; the restriction refuses a forbidden destination; the re-cut plan is
-  feasible, under the PCPSP LP, and above 1.15 times the fixed-cutoff plan on a plant-bound twin.
+  feasible, under the PCPSP LP, and above 1.15 times the fixed-cutoff plan on a plant-bound twin; the
+  Lagrangian bound meets the LP within its slack, is valid when stopped after three iterations, respects
+  forbidden destinations, and its destinations make a re-cut above the fixed cutoff.
 
 ### Changed
 - `docs/scheduling.md` section 9.4: the re-cut, the measurements, and the walk on the PCPSP LP's own

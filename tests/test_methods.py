@@ -330,6 +330,47 @@ def test_recut_on_the_lp_destinations_beats_the_fixed_cutoff_when_the_plant_bind
     assert value > lifted.npv * 1.15, f"re-cut {value:,.0f} against the fixed cutoff {lifted.npv:,.0f}"
 
 
+def test_pcpsp_lagrangian_bound_meets_the_lp_and_is_valid_at_any_iteration():
+    """Every multiplier vector gives an upper bound (the compiled closure only rounds up), and the
+    minimum is the LP: at convergence the bound sits on the LP within the rounding slack."""
+    twin, inst = _pcpsp_plant_bound()
+    lp = ob.pcpsp_lp_bound(inst, twin.precedence)
+    lg = ob.pcpsp_lagrangian_bound(inst, twin.precedence)
+    assert lg.method == "lagrangian" and lg.status == "converged"
+    assert lg.bound >= lp.bound * (1 - 1e-9)
+    assert lg.bound <= lp.bound + 2 * lg.slack + 1e-5 * abs(lp.bound)
+    early = ob.pcpsp_lagrangian_bound(inst, twin.precedence, max_iter=3)
+    assert early.bound >= lp.bound * (1 - 1e-9), "a bound stopped early is looser, never wrong"
+
+
+def test_pcpsp_lagrangian_bound_respects_forbidden_destinations():
+    twin, inst = _pcpsp_plant_bound(dims=(8, 8, 5), periods=4)
+    forbidden = inst.forbidden.copy()
+    forbidden[::7, 1] = True       # some blocks may not go to the plant
+    forbidden[5, :] = True         # one block may go nowhere, so it can never be mined
+    inst2 = dataclasses.replace(inst, forbidden=forbidden)
+    lp = ob.pcpsp_lp_bound(inst2, twin.precedence)
+    lg = ob.pcpsp_lagrangian_bound(inst2, twin.precedence)
+    assert lg.bound >= lp.bound * (1 - 1e-9)
+    assert lg.bound <= lp.bound + 2 * lg.slack + 1e-5 * abs(lp.bound)
+    share = lg.destination_share
+    assert share[5].sum() == 0, "a block with no allowed destination is never mined"
+    assert not (share[::7, 1] > 0).any(), "a forbidden destination is never chosen"
+
+
+def test_recut_on_the_lagrangian_destinations_beats_the_fixed_cutoff():
+    twin, inst = _pcpsp_plant_bound()
+    prec = twin.precedence
+    lg = ob.pcpsp_lagrangian_bound(inst, prec)
+    cut = ob.restrict_destinations(inst, lg.preferred_destination())
+    plan = ob.toposort_schedule(cut.to_cpit(), prec, weight="expected")
+    recut = ob.lift_to_pcpsp(cut, prec, plan.period_of_block)
+    value, _ = ob.pcpsp_schedule_value(inst, recut.period_of_block, recut.destination_of_block)
+    fixed = ob.toposort_schedule(inst.to_cpit(), prec, weight="expected")
+    assert value <= lg.bound * (1 + 1e-9)
+    assert value > fixed.npv * 1.15
+
+
 def test_opbsp_returns_none_rather_than_faking_an_exact_answer():
     twin, inst = _pcpsp(dims=(16, 16, 9), periods=8)
     assert ob.solve_opbsp_exact(inst, twin.precedence, max_variables=1000) is None

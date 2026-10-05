@@ -341,6 +341,23 @@ times are a poor order for an integer plan. The CPIT relaxation of the re-cut in
 that freedom on the destination side, and its order is the one that works. The attempt is not in the
 package.
 
+**The PCPSP bound at scale: the Lagrangian dual (0.6.1).** The direct LP has about `n T` precedence rows
+times the arc density; on a 14,400-block, ten-period deposit that is 1.44 million rows, and HiGHS did not
+finish two such instances in six and a half hours (its interior-point method was slower than its simplex
+on the 6,912-block instance). `destinations.pcpsp_lagrangian_bound` dualises the `R T` capacity rows. For
+multipliers `mu >= 0`, each block and period takes the destination worth most at those prices,
+`g_bt = max_d (disc_t v_bd - sum_r mu_rt q_rbd)`, and what remains is a maximum closure on the
+time-expanded graph (node `(b, t)` requires `(a, t)` for each predecessor and `(b, t + 1)`), with weights
+`g_bt - g_b,t+1`. `L(mu) = sum mu c + closure value` bounds every destination schedule for every `mu`, and its
+minimum is the LP value, because the inner problem is a closure. The closure is the compiled one, which
+rounds weights up, so every `L(mu)` over-estimates and the reported bound is valid at any iteration; once
+converged it exceeds the LP by at most the returned rounding slack. A cutting-plane method with a box trust
+region drives `mu`. Measured against the exact LP: 0.2 to 1.5 parts per million above it on three small
+instances and 4.8 parts per million on a 6,912-block twin (316,476,932 against 316,475,407, in 166 seconds
+against about 18 minutes). The relaxed schedule at the best `mu` is returned as one-hot destinations, which
+is what the re-cut fixes; on a 1,008-block twin the re-cut on those destinations is within 0.3 percent of
+the re-cut on the LP's own.
+
 ### 9.5 Lane's cutoff-grade policy
 
 `refine.lane_cutoffs` computes the three limiting cutoffs and the MIDPOINTS between them. The
