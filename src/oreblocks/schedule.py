@@ -916,6 +916,7 @@ def sliding_window_schedule(
     cover: float = 1.6,
     mip_gap: float = 1e-3,
     time_limit: float | None = None,
+    node_limit: int | None = None,
 ) -> ScheduleResult:
     """Cullenbine, Wood and Newman, Optimization Letters, 2011, doi:10.1007/s11590-011-0306-2.
 
@@ -961,9 +962,16 @@ def sliding_window_schedule(
     blocks, the method refused, and it ran on one case of thirteen. The ``relaxation`` argument was
     accepted and never read. A flat cap is still the wrong shape (150 blocks starved a 1008-block twin
     from 39.7 M to 10.4 M), which is why the size follows tonnage and the cap only refuses.
+
+    Since 0.6.2 every window starts from a feasible plan (the better of the LP-guided greedy and the
+    previous slide repaired) and is never answered below it. ``node_limit`` stops a window's branch and
+    bound after that many nodes and keeps its best incumbent: a COUNT, so unlike ``time_limit`` it lands
+    in the same place on every machine. The start fixes the primal side; a window whose LP bound is loose
+    still needs the tree to PROVE ``mip_gap``, and that proof is what the node limit caps.
     """
-    from scipy.optimize import LinearConstraint, milp
     from scipy.sparse import coo_matrix
+
+    from ._milp import milp_backend, solve_binary_program
 
     n, t_max, n_res = inst.n_blocks, inst.n_periods, inst.n_resources
     v = _finite_values(inst)
@@ -990,6 +998,14 @@ def sliding_window_schedule(
     rank = np.lexsort((np.arange(n), _depth_order(prec, n), e_time))
     rank_pos = np.empty(n, dtype=np.int64)
     rank_pos[rank] = np.arange(n)
+
+    # where the previous slide put each candidate, as a real period (the tail answers with its first
+    # period); it seeds the next slide's start
+    prev_at: dict[int, int] = {}
+    n_windows = 0
+    start_kept = 0
+    start_rejected = 0
+    at_limit = 0
 
     start = 0
     while start < t_max:
@@ -1059,6 +1075,10 @@ def sliding_window_schedule(
             for j in range(n_slot - 1):
                 add([(i * n_slot + j, 1.0), (i * n_slot + j + 1, -1.0)], -np.inf, 0.0)
 
+        # what the start builder needs, recorded while the rows are written so the two cannot disagree
+        cand_pred: list[list[int]] = [[] for _ in range(k)]
+        first_slot = np.zeros(k, dtype=np.int64)
+        blocked_i = np.zeros(k, dtype=bool)
         for i, b in enumerate(cand):
             blocked = False
             earliest = start
@@ -1068,6 +1088,7 @@ def sliding_window_schedule(
                     continue
                 if a in pos:
                     j0 = pos[a]
+                    cand_pred[i].append(j0)
                     for j in range(n_slot):
                         add([(i * n_slot + j, 1.0), (j0 * n_slot + j, -1.0)], -np.inf, 0.0)
                 elif decided[a]:
@@ -1076,13 +1097,16 @@ def sliding_window_schedule(
                     blocked = True
                     break
             if blocked:
+                blocked_i[i] = True
                 add([(i * n_slot + n_slot - 1, 1.0)], -np.inf, 0.0)
                 continue
             for j in range(n_slot):
                 if slot_period(j) < earliest:
                     add([(i * n_slot + j, 1.0)], -np.inf, 0.0)
+                    first_slot[i] = j + 1
 
         # capacity: what is mined AT slot j is y[.][j] - y[.][j-1]
+        slot_cap = np.zeros((n_res, n_slot))
         for rr in range(n_res):
             for j in range(n_slot):
                 t = slot_period(j)
@@ -1091,6 +1115,7 @@ def sliding_window_schedule(
                     if (has_tail and j == n_slot - 1)
                     else float(limit[rr, t] - used[rr, t])
                 )
+                slot_cap[rr, j] = max(0.0, cap)
                 entries = []
                 for i, b in enumerate(cand):
                     a_rb = float(coef[rr, b])
@@ -1103,24 +1128,44 @@ def sliding_window_schedule(
                     add(entries, -np.inf, max(0.0, cap))
 
         a_mat = coo_matrix((data, (rows, cols)), shape=(r, n_var)).tocsr()
-        try:
-            res = milp(
-                c=c,
-                constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
-                integrality=np.ones(n_var),
-                bounds=(0, 1),
-                options=_window_options(time_limit, mip_gap),
-            )
-        except Exception:  # noqa: BLE001 - a failed slide must not lose the schedule so far
-            res = None
 
-        if res is not None and res.success and res.x is not None:
-            y = np.asarray(res.x).reshape(k, n_slot) > 0.5
+        # A FEASIBLE START, the better of two: the LP-guided greedy over the candidates, and the
+        # previous slide's answer for the blocks still open, both passed through the same repair.
+        order_idx = np.argsort(rank_pos[cand], kind="stable")
+        greedy = np.zeros(k, dtype=np.int64)
+        previous = np.full(k, n_slot, dtype=np.int64)
+        for i, b in enumerate(cand):
+            t_prev = prev_at.get(int(b))
+            if t_prev is not None:
+                previous[i] = max(0, min(t_prev, stop) - start)
+        best_x: np.ndarray | None = None
+        best_obj = np.inf
+        for proposal in (greedy, previous):
+            slots = _window_start(order_idx, proposal, cand, coef, slot_cap, cand_pred, first_slot,
+                                  blocked_i, n_slot)
+            x0 = _cumulative(slots, n_slot)
+            if float(c @ x0) < best_obj:
+                best_obj, best_x = float(c @ x0), x0
+
+        res = solve_binary_program(
+            c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit, start=best_x,
+            node_limit=node_limit,
+        )
+        n_windows += 1
+        start_kept += int(res.used_start)
+        start_rejected += int(res.start_rejected)
+        if node_limit is not None and res.nodes >= node_limit:
+            at_limit += 1
+
+        if res.x is not None:
+            y = res.x.reshape(k, n_slot) > 0.5
             for i, b in enumerate(cand):
                 hit = np.nonzero(y[i])[0]
                 if hit.size == 0:
+                    prev_at.pop(int(b), None)
                     continue
                 j = int(hit[0])
+                prev_at[int(b)] = slot_period(j)
                 t = start + j
                 # FIX only the frozen prefix; everything else is reconsidered on the next slide
                 if j < (stop - start) and t < start + fix:
@@ -1141,14 +1186,62 @@ def sliding_window_schedule(
         heuristic=True,
         notes=(
             f"window {window}, {fix} period(s) fixed per slide, horizon beyond the window aggregated "
-            f"into one optimistic tail; candidate set capped at {cand_max} blocks per slide"
+            f"into one optimistic tail; candidate set capped at {cand_max} blocks per slide; each "
+            f"window solved by {milp_backend()} from a feasible start, which was the answer on "
+            f"{start_kept} of {n_windows} windows"
+            + (f"; {start_rejected} start(s) failed the feasibility check" if start_rejected else "")
+            + (f"; node limit {node_limit}, reached on {at_limit} window(s)" if node_limit is not None else "")
         ),
     )
 
 
-def _window_options(time_limit: float | None, mip_gap: float) -> dict:
-    """Solver options, with the wall clock omitted when the caller wants a reproducible bake."""
-    options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
-    if time_limit is not None:
-        options["time_limit"] = time_limit
-    return options
+def _window_start(
+    order_idx: np.ndarray,
+    proposal: np.ndarray,
+    cand: np.ndarray,
+    coef: np.ndarray,
+    slot_cap: np.ndarray,
+    cand_pred: list[list[int]],
+    first_slot: np.ndarray,
+    blocked: np.ndarray,
+    n_slot: int,
+) -> np.ndarray:
+    """A feasible slot for every window candidate (``n_slot`` = not mined), near ``proposal``.
+
+    Candidates are visited in ``E_b`` rank order, which puts a predecessor first. Each goes to the
+    first slot at or after its proposal that its predecessors and every remaining capacity allow;
+    a block whose predecessor is unmined, or undecided outside the set, stays unmined, exactly as the
+    window MILP forces. The result satisfies every row of that MILP by construction, which
+    :func:`oreblocks._milp.solve_binary_program` checks again before using it.
+    """
+    k = int(cand.size)
+    slot = np.full(k, n_slot, dtype=np.int64)
+    done = np.zeros(k, dtype=bool)
+    left = slot_cap.copy()
+    for i in order_idx:
+        done[i] = True
+        if blocked[i] or proposal[i] >= n_slot:
+            continue
+        lo_s = int(first_slot[i])
+        feasible = True
+        for p in cand_pred[i]:
+            if not done[p] or slot[p] >= n_slot:
+                feasible = False
+                break
+            lo_s = max(lo_s, int(slot[p]))
+        if not feasible:
+            continue
+        need = coef[:, int(cand[i])]
+        j = max(lo_s, int(proposal[i]))
+        while j < n_slot and np.any(need > left[:, j] + 1e-9 * np.maximum(1.0, left[:, j])):
+            j += 1
+        if j < n_slot:
+            slot[i] = j
+            left[:, j] -= need
+    return slot
+
+
+def _cumulative(slots: np.ndarray, n_slot: int) -> np.ndarray:
+    """``y[i][j] = 1`` from the block's slot on; all zero for an unmined block."""
+    j = np.arange(n_slot)
+    return (j[None, :] >= slots[:, None]).astype(np.float64).ravel()

@@ -101,21 +101,6 @@ def _neighbourhood(
     return np.array(sorted(out), dtype=np.int64)
 
 
-def _solver_options(time_limit: float | None, mip_gap: float) -> dict:
-    """Solver options, with the wall clock OMITTED when the caller asks for determinism.
-
-    A time limit makes the answer depend on the machine and its load. That is the right trade for an
-    interactive call and the wrong one for a bake whose artifacts are committed as evidence: a
-    downstream product found its headline gap was not reproducible from (params, seed) because this
-    rung was the reported best on nine cases of thirteen. `time_limit=None` stops on the relative MIP
-    gap alone, which is a property of the problem and lands in the same place everywhere.
-    """
-    options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
-    if time_limit is not None:
-        options["time_limit"] = time_limit
-    return options
-
-
 def exact_local_search(
     inst: Cpit,
     prec: Precedence,
@@ -131,11 +116,18 @@ def exact_local_search(
 
     Every accepted move is a proven improvement of the restricted problem, and the objective is
     monotone by construction because the incumbent is always feasible for the restricted model. Needs
-    scipy (``oreblocks[milp]``); without it, use :func:`oreblocks.improve_schedule`, which is a shift
+    ``oreblocks[milp]``; without it, use :func:`oreblocks.improve_schedule`, which is a shift
     neighbourhood and a strictly weaker one.
+
+    Since 0.6.2 every re-solve STARTS from the incumbent restricted to the neighbourhood (it is
+    feasible for the restricted model by construction), so the solver never opens below the plan it
+    is improving. ``time_limit=None`` stops on the relative MIP gap alone: a time limit makes the
+    answer depend on the machine and its load, which is the wrong trade for a bake whose artifacts
+    are committed as evidence.
     """
-    from scipy.optimize import LinearConstraint, milp
     from scipy.sparse import coo_matrix
+
+    from ._milp import milp_backend, solve_binary_program
 
     n, t_max, n_res = inst.n_blocks, inst.n_periods, inst.n_resources
     v = _finite_values(inst)
@@ -224,20 +216,16 @@ def exact_local_search(
         if r == 0:
             continue
         a_mat = coo_matrix((data, (rows, cols)), shape=(r, n_var)).tocsr()
-        try:
-            res = milp(
-                c=c,
-                constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
-                integrality=np.ones(n_var),
-                bounds=(0, 1),
-                options=_solver_options(time_limit, mip_gap),
-            )
-        except Exception:  # noqa: BLE001 - a solver failure must never lose the incumbent
-            continue
-        if not res.success or res.x is None:
+        tt = np.arange(t_max)
+        here = period[dset]
+        x0 = ((here[:, None] >= 0) & (tt[None, :] >= here[:, None])).astype(np.float64).ravel()
+        res = solve_binary_program(
+            c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit, start=x0,
+        )
+        if res.x is None or res.used_start:
             continue
 
-        y = np.asarray(res.x).reshape(k, t_max)
+        y = res.x.reshape(k, t_max)
         cand = period.copy()
         for i, b in enumerate(dset):
             hit = np.nonzero(y[i] > 0.5)[0]
@@ -260,7 +248,10 @@ def exact_local_search(
         per_period_resource=per_res,
         mined_blocks=int((period >= 0).sum()),
         heuristic=True,
-        notes=f"{accepted} of {rounds} exact C-PIT[D] re-solves improved the incumbent",
+        notes=(
+            f"{accepted} of {rounds} exact C-PIT[D] re-solves improved the incumbent; "
+            f"{milp_backend()}, each re-solve started from the incumbent"
+        ),
     )
 
 

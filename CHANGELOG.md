@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.6.2] - 2026-10-07
+
+Display version `0.06.002`. Every exact re-solve now starts from a feasible solution (#30).
+
+### Changed
+- **The integer programs are warm-started.** scipy's `milp` takes no starting point, so HiGHS opened every
+  window of `sliding_window_schedule`, and every re-solve of the two exact local searches, with whatever
+  incumbent its own heuristics found. Most windows close at the root in seconds; a few did not. Measured
+  on a downstream product's 14,400-block layered twin, the fifth window's root LP was 350.6 M and its first
+  incumbent 128.9 M, and the solve spent 54 minutes reaching 330.7 M and two hours more on the tree; the
+  whole window ran 802 minutes. All of them now go through `oreblocks._milp.solve_binary_program`, which
+  uses `highspy` (HiGHS's own Python interface) and its `setSolution`:
+  - each window starts from the better of two feasible plans: the LP-guided greedy over its candidates
+    (in `E_b` order, each block to the first slot its predecessors and the remaining capacities allow) and
+    the previous slide's answer for the blocks still open, repaired by the same pass;
+  - `exact_local_search` and `exact_destination_local_search` start each re-solve from the incumbent
+    restricted to the neighbourhood, which is feasible for it by construction.
+- **The contract the callers rely on:** the answer is never worse than the start. A solver failure, or an
+  incumbent below the start, returns the start. A start that fails the feasibility re-check is dropped and
+  counted (the window's notes say how many), or raises with `strict_start=True`.
+- `highspy>=1.11` joins `oreblocks[milp]` (and `dev`). Without it the helper falls back to scipy's `milp`
+  and uses the start only as a floor. Results name the backend (`highspy 1.15.1`), because the HiGHS in
+  `highspy` is not the one scipy bundles and a reproducibility check has to know which ran: **every MILP
+  result moves relative to 0.6.1.**
+
+### Fixed
+- `solve_opbsp_exact` accepts only an `Optimal` status. `highspy` returns its incumbent when the clock
+  stops, where scipy's `milp` reported failure; a time-limited incumbent labelled exact would have been a
+  new defect.
+
+- `node_limit` on `sliding_window_schedule` and the helper: stop the branch and bound after that many
+  nodes and keep the best incumbent, a count and therefore reproducible. Measured on the hard layered
+  window it does not help (about 16 s a node, no improvement in 200 nodes); see `docs/scheduling.md` 9.3.
+- Results carry the solver's node count and final gap.
+
+### Measured
+- On the 14,400-block layered twin, windows 1 to 4 close at the root in 9.9 to 165.8 s from the start;
+  the hard fifth window reaches 323.76 M after 13.6 minutes (0.6.1, cold: 315.3 M after 18 minutes) and
+  then needs the tree to prove 3 percent. The warm start fixes the primal side and guarantees every
+  window its start; it does not make the hard slides cheap.
+
+### Removed
+- The private `_window_options` and `_solver_options` helpers (their test now runs the deterministic stop
+  through the public function).
+
 ## [0.6.1] - 2026-10-05
 
 Display version `0.06.001`. One defect, found by solving the integer problem exactly on small twins.
