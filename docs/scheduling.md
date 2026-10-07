@@ -278,6 +278,32 @@ Measured after the change on that product's 6,912-block porphyry twin (8 periods
 1.34 percent below the bound, against 4.62 percent for ExTS and 4.22 percent for the exact C-PIT[D]
 local search, in 17 minutes on one core.
 
+**Warm starts (0.6.2), and what they do not fix.** Every window MILP, and every re-solve of the two exact
+local searches, now goes through `oreblocks._milp.solve_binary_program`, which hands HiGHS a feasible
+start through `highspy` (`setSolution`) and never answers below it. A window's start is the better of two
+plans built by one repair pass over its candidates: the LP-guided greedy (each block, in `E_b` order, to
+the first slot its predecessors and the remaining capacities allow) and the previous slide's answer for
+the blocks still open. Measured on a downstream product's 14,400-block layered twin (ten periods, two
+resources, windows of 19,356 binaries and about 150,000 rows, `mip_gap` 3 percent):
+
+| window | start | answer | time | nodes |
+|---|---:|---:|---:|---:|
+| 1 | 753.80 M | 755.56 M | 9.9 s | 1 |
+| 2 | 548.15 M | 548.23 M | 12.0 s | 1 |
+| 3 | 438.68 M | 438.68 M | 30.6 s | 1 |
+| 4 | 337.64 M | 370.41 M | 165.8 s | 1 |
+| 5 | 275.65 M | 323.76 M after 13.6 min, still open | - | 0 |
+
+Windows 1 to 4 close at the root. Window 5 is the hard slide of the 0.6.1 measurement: its root LP takes
+143 s and sits at 350.6 M, 27 percent above the start, and root cuts barely move it (350.58 M after
+380 s). HiGHS's sub-MIP heuristic found 323.76 M after 13.6 minutes from the warm start, where the cold
+0.6.1 solve had 315.3 M after 18 minutes. What remains is the PROOF: a 3 percent gap needs the bound
+near 334 M, and on a window LP this loose that is the branch and bound, at about 16 seconds a node. A
+`node_limit` (a count, so it is reproducible where a time limit is not) does not help this window: with
+the sub-MIP heuristics off and 200 nodes it ran 3,569 s and never improved its start. The option stays,
+documented and tested, for windows where the tree is cheap; closing the hard slides needs a smaller
+window model (for example blocks aggregated into bench-phase units), which is open work.
+
 ### 9.4 Destinations: when the cutoff grade becomes an output
 
 `destinations.destination_toposort` walks a weighted topological order (pass `weight=-E_b` for the

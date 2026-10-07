@@ -30,6 +30,17 @@ Display version `0.06.002`. Every exact re-solve now starts from a feasible solu
   stops, where scipy's `milp` reported failure; a time-limited incumbent labelled exact would have been a
   new defect.
 
+- `node_limit` on `sliding_window_schedule` and the helper: stop the branch and bound after that many
+  nodes and keep the best incumbent, a count and therefore reproducible. Measured on the hard layered
+  window it does not help (about 16 s a node, no improvement in 200 nodes); see `docs/scheduling.md` 9.3.
+- Results carry the solver's node count and final gap.
+
+### Measured
+- On the 14,400-block layered twin, windows 1 to 4 close at the root in 9.9 to 165.8 s from the start;
+  the hard fifth window reaches 323.76 M after 13.6 minutes (0.6.1, cold: 315.3 M after 18 minutes) and
+  then needs the tree to prove 3 percent. The warm start fixes the primal side and guarantees every
+  window its start; it does not make the hard slides cheap.
+
 ### Removed
 - The private `_window_options` and `_solver_options` helpers (their test now runs the deterministic stop
   through the public function).

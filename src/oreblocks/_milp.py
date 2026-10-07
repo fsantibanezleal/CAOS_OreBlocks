@@ -40,6 +40,8 @@ class MilpResult:
     used_start: bool  # the returned x IS the start (the solver failed or did not beat it)
     start_objective: float | None = None
     start_rejected: bool = False  # a start was passed and failed the feasibility re-check
+    nodes: int = -1  # branch-and-bound nodes the solver explored (-1 when the backend does not say)
+    gap: float = float("nan")  # the solver's final relative MIP gap
 
 
 def _highspy():
@@ -84,6 +86,7 @@ def solve_binary_program(
     time_limit: float | None = None,
     start: np.ndarray | None = None,
     strict_start: bool = False,
+    node_limit: int | None = None,
 ) -> MilpResult:
     """Minimise ``c'x`` over ``lo <= A x <= hi``, ``lb <= x <= ub``, ``x`` integer.
 
@@ -91,6 +94,10 @@ def solve_binary_program(
     machine. ``start`` must be feasible. An infeasible one means the caller built it wrong: with
     ``strict_start`` it raises, otherwise it is dropped, the solve runs cold, and ``start_rejected``
     says so, so a caller can count it rather than crash a day-long bake on a rounding edge.
+
+    ``node_limit`` stops the branch and bound after that many nodes and keeps the best incumbent (never
+    below the start). It is a COUNT, not a clock, so unlike ``time_limit`` it lands in the same place on
+    every machine; None (the default) stops on the gap alone.
     """
     n = int(c.shape[0])
     c = np.asarray(c, dtype=np.float64)
@@ -114,11 +121,13 @@ def solve_binary_program(
     backend = milp_backend()
     x: np.ndarray | None = None
     status = "not-run"
+    nodes, gap = -1, float("nan")
     try:
         if hs is not None:
-            x, status = _solve_highspy(hs, c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit, start)
+            x, status, nodes, gap = _solve_highspy(hs, c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit,
+                                                   start, node_limit)
         else:  # pragma: no cover - exercised only without the extra
-            x, status = _solve_scipy(c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit)
+            x, status = _solve_scipy(c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit, node_limit)
     except Exception as exc:  # noqa: BLE001 - a solver failure must never lose the start
         status = f"error: {type(exc).__name__}"
         x = None
@@ -131,13 +140,13 @@ def solve_binary_program(
     if x is not None:
         obj = float(c @ x)
         if start is None or obj <= start_obj + 1e-9 * max(1.0, abs(start_obj)):
-            return MilpResult(x, obj, backend, status, False, start_obj, rejected)
+            return MilpResult(x, obj, backend, status, False, start_obj, rejected, nodes, gap)
     if start is not None:
-        return MilpResult(start.copy(), start_obj, backend, status, True, start_obj, rejected)
-    return MilpResult(None, float("inf"), backend, status, False, None, rejected)
+        return MilpResult(start.copy(), start_obj, backend, status, True, start_obj, rejected, nodes, gap)
+    return MilpResult(None, float("inf"), backend, status, False, None, rejected, nodes, gap)
 
 
-def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start):
+def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start, node_limit=None):
     csc = a_csr.tocsc()
     h = hs.Highs()
     h.setOptionValue("output_flag", False)
@@ -145,6 +154,8 @@ def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start):
     h.setOptionValue("presolve", "on")
     if time_limit is not None:
         h.setOptionValue("time_limit", float(time_limit))
+    if node_limit is not None:
+        h.setOptionValue("mip_max_nodes", int(node_limit))
     inf = hs.kHighsInf
     lp = hs.HighsLp()
     lp.num_col_ = int(c.shape[0])
@@ -169,17 +180,20 @@ def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start):
     name = h.modelStatusToString(st)
     info = h.getInfo()
     # a primal solution exists whenever HiGHS found any feasible point (optimal, or stopped on a limit)
+    nodes, gap = int(info.mip_node_count), float(info.mip_gap)
     if int(info.primal_solution_status) == 2:
-        return np.asarray(h.getSolution().col_value, dtype=np.float64), name
-    return None, name
+        return np.asarray(h.getSolution().col_value, dtype=np.float64), name, nodes, gap
+    return None, name, nodes, gap
 
 
-def _solve_scipy(c, a_csr, lo, hi, lb, ub, mip_gap, time_limit):  # pragma: no cover
+def _solve_scipy(c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, node_limit=None):  # pragma: no cover
     from scipy.optimize import Bounds, LinearConstraint, milp
 
     options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
     if time_limit is not None:
         options["time_limit"] = time_limit
+    if node_limit is not None:
+        options["node_limit"] = int(node_limit)
     res = milp(
         c=c,
         constraints=LinearConstraint(a_csr, lo, hi),

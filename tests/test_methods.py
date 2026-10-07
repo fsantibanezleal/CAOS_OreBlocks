@@ -614,6 +614,20 @@ def test_the_warm_started_window_is_feasible_reproducible_and_says_what_ran() ->
     assert ls.npv >= a.npv - 1e-9 and "started from the incumbent" in ls.notes
 
 
+def test_a_node_limit_is_deterministic_and_never_below_the_start() -> None:
+    """A wall-clock limit makes a bake depend on the machine; a NODE count does not. A window stopped
+    by it keeps its best incumbent, which is never below the start, and two runs agree to the bit."""
+    twin, inst = _instance(dims=(12, 12, 7), n_res=2, periods=6, slack=(0.6, 0.45))
+    prec = twin.precedence
+    kw = dict(window=3, fix=1, cand_max=1500, mip_gap=1e-6, node_limit=1)
+    a = ob.sliding_window_schedule(inst, prec, **kw)
+    b = ob.sliding_window_schedule(inst, prec, **kw)
+    assert np.array_equal(a.period_of_block, b.period_of_block)
+    assert "node limit 1" in a.notes
+    for r in range(inst.n_resources):
+        assert (a.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all()
+
+
 def test_the_sliding_window_actually_looks_ahead() -> None:
     """The `window` argument must change the answer, or the citation is doing the work.
 

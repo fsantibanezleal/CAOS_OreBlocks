@@ -916,6 +916,7 @@ def sliding_window_schedule(
     cover: float = 1.6,
     mip_gap: float = 1e-3,
     time_limit: float | None = None,
+    node_limit: int | None = None,
 ) -> ScheduleResult:
     """Cullenbine, Wood and Newman, Optimization Letters, 2011, doi:10.1007/s11590-011-0306-2.
 
@@ -961,6 +962,12 @@ def sliding_window_schedule(
     blocks, the method refused, and it ran on one case of thirteen. The ``relaxation`` argument was
     accepted and never read. A flat cap is still the wrong shape (150 blocks starved a 1008-block twin
     from 39.7 M to 10.4 M), which is why the size follows tonnage and the cap only refuses.
+
+    Since 0.6.2 every window starts from a feasible plan (the better of the LP-guided greedy and the
+    previous slide repaired) and is never answered below it. ``node_limit`` stops a window's branch and
+    bound after that many nodes and keeps its best incumbent: a COUNT, so unlike ``time_limit`` it lands
+    in the same place on every machine. The start fixes the primal side; a window whose LP bound is loose
+    still needs the tree to PROVE ``mip_gap``, and that proof is what the node limit caps.
     """
     from scipy.sparse import coo_matrix
 
@@ -998,6 +1005,7 @@ def sliding_window_schedule(
     n_windows = 0
     start_kept = 0
     start_rejected = 0
+    at_limit = 0
 
     start = 0
     while start < t_max:
@@ -1141,10 +1149,13 @@ def sliding_window_schedule(
 
         res = solve_binary_program(
             c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit, start=best_x,
+            node_limit=node_limit,
         )
         n_windows += 1
         start_kept += int(res.used_start)
         start_rejected += int(res.start_rejected)
+        if node_limit is not None and res.nodes >= node_limit:
+            at_limit += 1
 
         if res.x is not None:
             y = res.x.reshape(k, n_slot) > 0.5
@@ -1179,6 +1190,7 @@ def sliding_window_schedule(
             f"window solved by {milp_backend()} from a feasible start, which was the answer on "
             f"{start_kept} of {n_windows} windows"
             + (f"; {start_rejected} start(s) failed the feasibility check" if start_rejected else "")
+            + (f"; node limit {node_limit}, reached on {at_limit} window(s)" if node_limit is not None else "")
         ),
     )
 
