@@ -917,6 +917,7 @@ def sliding_window_schedule(
     mip_gap: float = 1e-3,
     time_limit: float | None = None,
     node_limit: int | None = None,
+    warm_start: bool = False,
 ) -> ScheduleResult:
     """Cullenbine, Wood and Newman, Optimization Letters, 2011, doi:10.1007/s11590-011-0306-2.
 
@@ -963,11 +964,16 @@ def sliding_window_schedule(
     accepted and never read. A flat cap is still the wrong shape (150 blocks starved a 1008-block twin
     from 39.7 M to 10.4 M), which is why the size follows tonnage and the cap only refuses.
 
-    Since 0.6.2 every window starts from a feasible plan (the better of the LP-guided greedy and the
-    previous slide repaired) and is never answered below it. ``node_limit`` stops a window's branch and
-    bound after that many nodes and keeps its best incumbent: a COUNT, so unlike ``time_limit`` it lands
-    in the same place on every machine. The start fixes the primal side; a window whose LP bound is loose
-    still needs the tree to PROVE ``mip_gap``, and that proof is what the node limit caps.
+    Every window has a feasible plan (the better of the LP-guided greedy and the previous slide repaired)
+    and is never answered below it. Since 0.6.3 that plan is a FLOOR, not a start (``warm_start=False``):
+    handed to HiGHS at the usual 3 percent window gap, it anchored the search, because the solver proved
+    the gap from it at once and stopped near it. Measured on a 14,400-block vein twin, the whole method
+    reached 1.315 percent below the bound with warm windows and 0.097 percent cold with the floor (which
+    was the answer on 2 of 10 windows); warm windows needed a 0.5 percent gap to get back to 0.209.
+
+    ``node_limit`` stops a window's branch and bound after that many nodes and keeps its best incumbent:
+    a COUNT, so unlike ``time_limit`` it lands in the same place on every machine. A window whose LP
+    bound is loose needs the tree to PROVE ``mip_gap``, and that proof is what the node limit caps.
     """
     from scipy.sparse import coo_matrix
 
@@ -1149,7 +1155,7 @@ def sliding_window_schedule(
 
         res = solve_binary_program(
             c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit, start=best_x,
-            node_limit=node_limit,
+            node_limit=node_limit, warm=warm_start,
         )
         n_windows += 1
         start_kept += int(res.used_start)
@@ -1187,8 +1193,9 @@ def sliding_window_schedule(
         notes=(
             f"window {window}, {fix} period(s) fixed per slide, horizon beyond the window aggregated "
             f"into one optimistic tail; candidate set capped at {cand_max} blocks per slide; each "
-            f"window solved by {milp_backend()} from a feasible start, which was the answer on "
-            f"{start_kept} of {n_windows} windows"
+            f"window solved by {milp_backend()} {'from' if warm_start else 'with'} a feasible "
+            f"{'start' if warm_start else 'floor'}, which was the answer on {start_kept} of {n_windows} "
+            f"windows"
             + (f"; {start_rejected} start(s) failed the feasibility check" if start_rejected else "")
             + (f"; node limit {node_limit}, reached on {at_limit} window(s)" if node_limit is not None else "")
         ),
