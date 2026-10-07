@@ -1,6 +1,6 @@
 [project]
 name = "oreblocks"
-version = "0.6.1"
+version = "0.6.2"
 description = "Synthetic 3D ore-body block models of the MineLib nature and their scheduling: seeded deposit archetypes, bench structure, slope precedence, UPIT economics, an exact max-closure solver, MineLib .blocks/.prec/.upit/.cpit/.pcpsp read/write, the certified CPIT LP bound by the critical multiplier algorithm, TopoSort rounding heuristics and spatial-coherence metrics"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,8 +23,8 @@ Changelog = "https://github.com/fsantibanezleal/CAOS_OreBlocks/blob/main/CHANGEL
 Issues = "https://github.com/fsantibanezleal/CAOS_OreBlocks/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.4", "scipy>=1.11"]
-milp = ["scipy>=1.11"]
+dev = ["pytest>=8", "ruff>=0.4", "scipy>=1.11", "highspy>=1.11"]
+milp = ["scipy>=1.11", "highspy>=1.11"]
 
 [build-system]
 requires = ["setuptools>=68"]

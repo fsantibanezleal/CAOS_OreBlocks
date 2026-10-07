@@ -561,11 +561,6 @@ def test_the_exact_local_search_can_be_asked_for_a_deterministic_stop() -> None:
     of None drops the option entirely and stops on the relative MIP gap, which is a property of the
     problem.
     """
-    from oreblocks.refine import _solver_options
-
-    assert "time_limit" not in _solver_options(None, 1e-4)
-    assert _solver_options(8.0, 1e-5)["time_limit"] == 8.0
-
     twin, inst = _instance(n_res=2)
     seed = ob.toposort_schedule(inst, twin.precedence, weight="greedy")
     a = ob.exact_local_search(inst, twin.precedence, seed, d_max=40, rounds=2, time_limit=None)
@@ -573,6 +568,50 @@ def test_the_exact_local_search_can_be_asked_for_a_deterministic_stop() -> None:
     assert a.npv == pytest.approx(b.npv, rel=1e-12)
     assert np.array_equal(a.period_of_block, b.period_of_block)
     assert a.npv >= seed.npv - 1e-9
+
+
+def test_the_milp_helper_never_returns_less_than_its_start() -> None:
+    """Every exact re-solve goes through one helper that takes a feasible start (0.6.2).
+
+    scipy's ``milp`` takes none, so HiGHS opened each window with its own first incumbent; on a
+    downstream 14,400-block twin that was 128.9 M against a root LP of 350.6 M, and closing the
+    difference took hours. The contract: the answer is never worse than the start, an optimal start
+    comes back as the answer, and an infeasible one is refused (strict) or dropped and counted.
+    """
+    import scipy.sparse as sp
+
+    from oreblocks._milp import milp_backend, solve_binary_program
+
+    c = -np.array([5.0, 4.0, 3.0])
+    a = sp.csr_matrix(np.array([[2.0, 3.0, 1.0], [-1.0, 1.0, 0.0]]))
+    lo, hi = np.full(2, -np.inf), np.array([5.0, 0.0])
+    cold = solve_binary_program(c, a, lo, hi)
+    warm = solve_binary_program(c, a, lo, hi, start=np.array([1.0, 0.0, 0.0]))
+    assert cold.objective == warm.objective == -9.0
+    assert warm.start_objective == -5.0 and not warm.used_start
+    best = solve_binary_program(c, a, lo, hi, start=np.array([1.0, 1.0, 0.0]))
+    assert best.objective == -9.0
+    with pytest.raises(ValueError, match="infeasible"):
+        solve_binary_program(c, a, lo, hi, start=np.array([0.0, 1.0, 0.0]), strict_start=True)
+    dropped = solve_binary_program(c, a, lo, hi, start=np.array([0.0, 1.0, 0.0]))
+    assert dropped.start_rejected and dropped.objective == -9.0
+    assert milp_backend().startswith("highspy"), "oreblocks[milp] must bring highspy"
+
+
+def test_the_warm_started_window_is_feasible_reproducible_and_says_what_ran() -> None:
+    """The window start is built by a pass over the candidates; if it ever broke a row of the window
+    MILP the helper would drop it and the notes would say so. Two runs must agree to the bit, because a
+    downstream bake is checked for reproducibility from (params, seed)."""
+    twin, inst = _instance(dims=(12, 12, 7), n_res=2, periods=6, slack=(0.6, 0.45))
+    prec = twin.precedence
+    a = ob.sliding_window_schedule(inst, prec, window=3, fix=1, cand_max=1500, mip_gap=3e-2)
+    b = ob.sliding_window_schedule(inst, prec, window=3, fix=1, cand_max=1500, mip_gap=3e-2)
+    assert np.array_equal(a.period_of_block, b.period_of_block)
+    assert "highspy" in a.notes and "failed the feasibility check" not in a.notes
+    for r in range(inst.n_resources):
+        assert (a.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all()
+    ls = ob.exact_local_search(inst, prec, a, d_max=60, rounds=3, time_limit=None)
+    assert ls.npv >= a.npv - 1e-9 and "started from the incumbent" in ls.notes
 
 
 def test_the_sliding_window_actually_looks_ahead() -> None:

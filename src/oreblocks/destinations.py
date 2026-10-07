@@ -294,11 +294,12 @@ def exact_destination_local_search(
     result is never below ``start``.
 
     ``time_limit=None`` stops each re-solve on the relative MIP gap alone, so a bake is reproducible
-    from (instance, seed) and not from the speed of the machine.
+    from (instance, seed) and not from the speed of the machine. Since 0.6.2 each re-solve starts from
+    the incumbent restricted to the neighbourhood, which is feasible for it by construction.
     """
-    from scipy.optimize import LinearConstraint, milp
     from scipy.sparse import coo_matrix
 
+    from ._milp import milp_backend, solve_binary_program
     from .refine import _neighbourhood  # noqa: PLC2701 - the same neighbourhoods as C-PIT[D]
     from .schedule import _successors  # noqa: PLC2701
 
@@ -399,23 +400,21 @@ def exact_destination_local_search(
                     add(entries, -np.inf, float(inst.limit[rr][t] - used[rr, t]))
 
         a_mat = coo_matrix((data, (rows, cols)), shape=(len(lo), n_var)).tocsr()
-        options: dict = {"mip_rel_gap": mip_gap, "presolve": True}
-        if time_limit is not None:
-            options["time_limit"] = time_limit
-        try:
-            res = milp(
-                c=c,
-                constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
-                integrality=np.ones(n_var),
-                bounds=(lb, ub),
-                options=options,
-            )
-        except Exception:  # noqa: BLE001 - a solver failure must never lose the incumbent
-            continue
-        if not res.success or res.x is None:
+        x0 = np.zeros(n_var)
+        for i, b in enumerate(dset):
+            pb = int(period[b])
+            if pb < 0:
+                continue
+            x0[yv(i, pb) : yv(i, 0) + t_max] = 1.0
+            x0[zv(i, int(dest[b]), pb)] = 1.0
+        res = solve_binary_program(
+            c, a_mat, np.array(lo), np.array(hi), lb=lb, ub=ub, mip_gap=mip_gap,
+            time_limit=time_limit, start=x0,
+        )
+        if res.x is None or res.used_start:
             continue
 
-        x = np.asarray(res.x)
+        x = res.x
         cand_p, cand_d = period.copy(), dest.copy()
         for i, b in enumerate(dset):
             cand_p[b], cand_d[b] = -1, -1
@@ -443,7 +442,10 @@ def exact_destination_local_search(
         mined_blocks=int((period >= 0).sum()),
         exact=False,
         effective_cutoff=_effective_cutoff(inst, period, dest, grade),
-        notes=f"{accepted} of {rounds} exact OPBSP-[D] re-solves improved the incumbent",
+        notes=(
+            f"{accepted} of {rounds} exact OPBSP-[D] re-solves improved the incumbent; "
+            f"{milp_backend()}, each re-solve started from the incumbent"
+        ),
     )
 
 
@@ -819,8 +821,9 @@ def solve_opbsp_exact(
     The precedence row is the cumulative form: "by period t, b has been mined at most as much as a
     has", which is exactly ``x_bt <= x_at`` written over the destination-indexed binaries.
     """
-    from scipy.optimize import LinearConstraint, milp
     from scipy.sparse import coo_matrix
+
+    from ._milp import milp_backend, solve_binary_program
 
     n, t_max, n_dest = inst.n_blocks, inst.n_periods, inst.n_destinations
     n_var = n * n_dest * t_max
@@ -878,17 +881,16 @@ def solve_opbsp_exact(
 
     a_mat = coo_matrix((data, (rows, cols)), shape=(r, n_var)).tocsr()
     ub = np.where(forbidden, 0.0, 1.0)
-    res = milp(
-        c=c,
-        constraints=LinearConstraint(a_mat, np.array(lo), np.array(hi)),
-        integrality=np.ones(n_var),
-        bounds=(np.zeros(n_var), ub),
-        options={"time_limit": time_limit, "mip_rel_gap": mip_gap, "presolve": True},
+    res = solve_binary_program(
+        c, a_mat, np.array(lo), np.array(hi), lb=np.zeros(n_var), ub=ub, mip_gap=mip_gap,
+        time_limit=time_limit,
     )
-    if not res.success or res.x is None:
+    # EXACT means the solver proved the gap: highspy hands back its incumbent when the clock stops,
+    # where scipy reported failure, and a time-limited incumbent must not be labelled exact
+    if res.x is None or res.status != "Optimal":
         return None
 
-    x = np.asarray(res.x)
+    x = res.x
     period = np.full(n, -1, dtype=np.int64)
     dest = np.full(n, -1, dtype=np.int64)
     npv = 0.0
@@ -912,5 +914,5 @@ def solve_opbsp_exact(
         mined_blocks=int((period >= 0).sum()),
         exact=True,
         effective_cutoff=cutoff,
-        notes=f"HiGHS MILP, {n_var} binaries, {r} rows, mip_rel_gap {mip_gap}",
+        notes=f"{milp_backend()} MILP, {n_var} binaries, {r} rows, mip_rel_gap {mip_gap}",
     )
