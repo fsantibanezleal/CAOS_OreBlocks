@@ -317,7 +317,8 @@ compound it. Measured on the same twin:
 | warm start, `mip_gap` 0.5% | 0.209% | 14.2 min |
 | cold, plan kept as a floor, `mip_gap` 3% (the default since 0.6.3) | 0.097% | 26.8 min |
 
-The floor was the answer on 2 of the 10 windows. `warm_start=True` keeps the 0.6.2 behaviour for a caller
+The floor was the answer on 2 of the 10 windows. On a 6,912-block porphyry twin the same comparison gives
+1.274 percent warm (47.9 min) and 1.113 percent cold with the floor (52.7 min), against 1.34 on 0.6.1. `warm_start=True` keeps the 0.6.2 behaviour for a caller
 who wants the speed. The exact local searches keep their warm start: they stop at a 1e-4 gap and accept
 only proven improvements, so a start cannot anchor them.
 

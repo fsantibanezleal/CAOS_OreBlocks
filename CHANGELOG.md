@@ -11,7 +11,8 @@ Display version `0.06.003`. One regression of 0.6.2, found by the first case of 
   percent below the bound (0.6.1) to 1.315 percent (0.6.2); a 1 percent window gap gave 1.088, a 0.5
   percent gap 0.209 in 14 minutes. `sliding_window_schedule` now solves each window cold and keeps the
   feasible plan as a FLOOR (`warm_start=False`, the default): 0.097 percent in 27 minutes, the floor being
-  the answer on 2 of 10 windows. `warm_start=True` keeps the 0.6.2 behaviour. The local searches keep
+  the answer on 2 of 10 windows. On a 6,912-block porphyry twin: 1.274 percent warm, 1.113 cold with the
+  floor (0.6.1: 1.34). `warm_start=True` keeps the 0.6.2 behaviour. The local searches keep
   their warm start: they run at a 1e-4 gap and accept only proven improvements, so nothing anchors.
 - `solve_binary_program(warm=False)` keeps a start as a floor without handing it to the solver.
 
