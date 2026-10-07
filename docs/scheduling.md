@@ -304,6 +304,23 @@ the sub-MIP heuristics off and 200 nodes it ran 3,569 s and never improved its s
 documented and tested, for windows where the tree is cheap; closing the hard slides needs a smaller
 window model (for example blocks aggregated into bench-phase units), which is open work.
 
+**The warm start cost quality, so the window keeps its plan as a FLOOR (0.6.3).** The first case of a
+downstream re-bake on 0.6.2 came out worse: on the 14,400-block vein twin the whole method fell from 0.17
+percent below the bound to 1.315. At a 3 percent window gap HiGHS proves the gap from a handed-in start
+almost at once and stops near it, so every window fixes a period close to the greedy plan, and the slides
+compound it. Measured on the same twin:
+
+| window solve | gap of the whole method | time |
+|---|---:|---:|
+| warm start, `mip_gap` 3% | 1.315% | 1.3 min |
+| warm start, `mip_gap` 1% | 1.088% | 2.1 min |
+| warm start, `mip_gap` 0.5% | 0.209% | 14.2 min |
+| cold, plan kept as a floor, `mip_gap` 3% (the default since 0.6.3) | 0.097% | 26.8 min |
+
+The floor was the answer on 2 of the 10 windows. `warm_start=True` keeps the 0.6.2 behaviour for a caller
+who wants the speed. The exact local searches keep their warm start: they stop at a 1e-4 gap and accept
+only proven improvements, so a start cannot anchor them.
+
 ### 9.4 Destinations: when the cutoff grade becomes an output
 
 `destinations.destination_toposort` walks a weighted topological order (pass `weight=-E_b` for the

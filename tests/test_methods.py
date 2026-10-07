@@ -608,6 +608,12 @@ def test_the_warm_started_window_is_feasible_reproducible_and_says_what_ran() ->
     b = ob.sliding_window_schedule(inst, prec, window=3, fix=1, cand_max=1500, mip_gap=3e-2)
     assert np.array_equal(a.period_of_block, b.period_of_block)
     assert "highspy" in a.notes and "failed the feasibility check" not in a.notes
+    # 0.6.3: the window's plan is a floor by default (a warm start anchored the search at a loose gap)
+    assert "feasible floor" in a.notes
+    w = ob.sliding_window_schedule(inst, prec, window=3, fix=1, cand_max=1500, mip_gap=3e-2, warm_start=True)
+    assert "feasible start" in w.notes
+    for r in range(inst.n_resources):
+        assert (w.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all()
     for r in range(inst.n_resources):
         assert (a.per_period_resource[r] <= inst.limit[r] * (1 + 1e-9) + 1e-6).all()
     ls = ob.exact_local_search(inst, prec, a, d_max=60, rounds=3, time_limit=None)

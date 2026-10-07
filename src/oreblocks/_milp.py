@@ -87,6 +87,7 @@ def solve_binary_program(
     start: np.ndarray | None = None,
     strict_start: bool = False,
     node_limit: int | None = None,
+    warm: bool = True,
 ) -> MilpResult:
     """Minimise ``c'x`` over ``lo <= A x <= hi``, ``lb <= x <= ub``, ``x`` integer.
 
@@ -94,6 +95,10 @@ def solve_binary_program(
     machine. ``start`` must be feasible. An infeasible one means the caller built it wrong: with
     ``strict_start`` it raises, otherwise it is dropped, the solve runs cold, and ``start_rejected``
     says so, so a caller can count it rather than crash a day-long bake on a rounding edge.
+
+    ``warm=False`` keeps the start as a FLOOR only: HiGHS solves cold and the start is returned when the
+    solver ends below it. That is what the sliding window uses (0.6.3), because at a loose gap a warm
+    start anchors the search: HiGHS proves the gap from the start at once and stops near it.
 
     ``node_limit`` stops the branch and bound after that many nodes and keeps the best incumbent (never
     below the start). It is a COUNT, not a clock, so unlike ``time_limit`` it lands in the same place on
@@ -125,7 +130,7 @@ def solve_binary_program(
     try:
         if hs is not None:
             x, status, nodes, gap = _solve_highspy(hs, c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit,
-                                                   start, node_limit)
+                                                   start if warm else None, node_limit)
         else:  # pragma: no cover - exercised only without the extra
             x, status = _solve_scipy(c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit, node_limit)
     except Exception as exc:  # noqa: BLE001 - a solver failure must never lose the start
