@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.6.1] - 2026-10-05
+
+Display version `0.06.001`. One defect, found by solving the integer problem exactly on small twins.
+
+### Fixed
+- **The destination methods did not use the destination decision where it is worth the most.** On a
+  twin whose plant takes half of the pit's ore tonnage, choosing destinations is worth about 59
+  percent over the fixed cutoff (exact OPBSP incumbent 10.37 M, MIP bound 10.50 M, against 6.53 M for
+  exact CPIT, on 320 blocks), and the 0.6.0 destination TopoSort returned -0.79 M: comparing a block's
+  two values sends every marginal ore block to the plant, because its plant value is positive and its
+  dump value negative, and the plant tonnage it takes is gone for the richer ore below. The
+  relaxation knows that opportunity cost and the comparison does not.
+
+### Added
+- `pcpsp_lp_bound(..., solution=True)`: the bound also carries each block's LP expected extraction
+  time and the share the LP sends to each destination; `PcpspBound.preferred_destination()` reads the
+  dominant destination.
+- `restrict_destinations(inst, dest)`: the instance with each block allowed only the named
+  destination. With the LP's preferred destinations, `to_cpit()` of the result is the RE-CUT: a CPIT
+  whose plans are plans of the original PCPSP with the same value, scheduled by the full CPIT
+  machinery. Measured: 10.15 M with the sliding window on the 320-block twin above, and 34.81 M after
+  the destination local search on a 1,008-block one, against 26.78 M for the best fixed-cutoff plan and
+  a PCPSP LP of 36.03 M.
+- `pcpsp_lagrangian_bound`: the PCPSP LP bound through its Lagrangian dual, a maximum closure on the
+  time-expanded graph per multiplier vector, for instances where the direct LP is out of reach (HiGHS did
+  not finish two 1.44-million-row instances in six and a half hours). Valid at every iteration (the
+  compiled closure rounds up), within the rounding slack of the LP once converged (4.8 parts per million on
+  a 6,912-block twin, in 166 s against about 18 minutes), and it returns the relaxed schedule's
+  destinations for the re-cut. `PcpspBound` gains `method`, `iterations`, `gap_estimate` and `slack`;
+  its `n_variables` and `n_rows` are the size of the PCPSP LP under either method, so the Lagrangian
+  path reports the LP it stands for and not its closure graph.
+- Tests: the LP solution fields; the restriction refuses a forbidden destination; the re-cut plan is
+  feasible, under the PCPSP LP, and above 1.15 times the fixed-cutoff plan on a plant-bound twin; the
+  Lagrangian bound meets the LP within its slack, is valid when stopped after three iterations, respects
+  forbidden destinations, and its destinations make a re-cut above the fixed cutoff.
+
+### Changed
+- `docs/scheduling.md` section 9.4: the re-cut, the measurements, and the walk on the PCPSP LP's own
+  expected times that was tried first and is not in the package (it fell to 26.41 M on 1,008 blocks).
+
 ## [0.6.0] - 2026-10-04
 
 Display version `0.06.000`. Four defects found by measuring a downstream product's thirteen committed
