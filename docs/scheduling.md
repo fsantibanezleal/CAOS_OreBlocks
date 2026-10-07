@@ -312,6 +312,52 @@ quantity.
 variables Jelvez et al. use, and returns `None` above a size budget rather than passing a heuristic
 answer off as an exact one.
 
+**The re-cut (0.6.1): let the relaxation choose the cutoff.** The destination TopoSort compares a
+block's discounted values at its destinations and nothing else. When the plant binds that comparison
+is myopic: a marginal ore block has a positive plant value and a negative dump value, so it always
+goes to the plant, and the plant tonnage it takes is gone for the richer ore below it. That is Lane's
+point about a mill-limited operation (the cutoff rises above break-even by the opportunity cost of the
+mill), and the PCPSP relaxation prices it. `pcpsp_lp_bound(..., solution=True)` returns, with the
+bound, each block's expected extraction time and the share of it the LP sends to each destination;
+`PcpspBound.preferred_destination()` reads the dominant one, and `restrict_destinations` fixes it. The
+restricted instance's `to_cpit()` is a CPIT whose plans are plans of the original PCPSP with the same
+value, so the whole CPIT machinery schedules it: its own critical-multiplier relaxations, ExTS, the
+sliding window, and then `exact_destination_local_search` on the original instance, where every
+destination is free again.
+
+Measured on a porphyry twin whose plant takes half of the pit's ore tonnage (`twin-porphyry-s`
+economics and scenario, scaled down so the integer problem can be solved): on 320 blocks the exact
+OPBSP incumbent after 300 s is 10.37 M (MIP bound 10.50 M, PCPSP LP 11.01 M), the best fixed-cutoff
+plan 6.51 M, the destination TopoSort of 0.6.0 -0.79 M, and the re-cut scheduled by the sliding window
+10.15 M. On 1,008 blocks the re-cut reaches 34.31 M with the sliding window and 34.81 M after the
+local search, against 26.78 M for the best fixed-cutoff plan and a PCPSP LP of 36.03 M. A test asserts
+on a smaller deposit that the re-cut ExTS plan is feasible, under the PCPSP LP, and above 1.15 times
+the fixed-cutoff ExTS plan (measured 1.25 to 1.35 on three sizes).
+
+A first attempt walked the PCPSP LP's own expected times and sent each block to its preferred
+destination inside the destination TopoSort. It matched the re-cut on 320 blocks and fell to
+26.41 M on 1,008: the PCPSP relaxation mines deep cones fractionally from period one, so its expected
+times are a poor order for an integer plan. The CPIT relaxation of the re-cut instance does not have
+that freedom on the destination side, and its order is the one that works. The attempt is not in the
+package.
+
+**The PCPSP bound at scale: the Lagrangian dual (0.6.1).** The direct LP has about `n T` precedence rows
+times the arc density; on a 14,400-block, ten-period deposit that is 1.44 million rows, and HiGHS did not
+finish two such instances in six and a half hours (its interior-point method was slower than its simplex
+on the 6,912-block instance). `destinations.pcpsp_lagrangian_bound` dualises the `R T` capacity rows. For
+multipliers `mu >= 0`, each block and period takes the destination worth most at those prices,
+`g_bt = max_d (disc_t v_bd - sum_r mu_rt q_rbd)`, and what remains is a maximum closure on the
+time-expanded graph (node `(b, t)` requires `(a, t)` for each predecessor and `(b, t + 1)`), with weights
+`g_bt - g_b,t+1`. `L(mu) = sum mu c + closure value` bounds every destination schedule for every `mu`, and its
+minimum is the LP value, because the inner problem is a closure. The closure is the compiled one, which
+rounds weights up, so every `L(mu)` over-estimates and the reported bound is valid at any iteration; once
+converged it exceeds the LP by at most the returned rounding slack. A cutting-plane method with a box trust
+region drives `mu`. Measured against the exact LP: 0.2 to 1.5 parts per million above it on three small
+instances and 4.8 parts per million on a 6,912-block twin (316,476,932 against 316,475,407, in 166 seconds
+against about 18 minutes). The relaxed schedule at the best `mu` is returned as one-hot destinations, which
+is what the re-cut fixes; on a 1,008-block twin the re-cut on those destinations is within 0.3 percent of
+the re-cut on the LP's own.
+
 ### 9.5 Lane's cutoff-grade policy
 
 `refine.lane_cutoffs` computes the three limiting cutoffs and the MIDPOINTS between them. The

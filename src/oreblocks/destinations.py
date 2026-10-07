@@ -35,7 +35,7 @@ rather than hidden.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -50,8 +50,10 @@ __all__ = [
     "destination_toposort",
     "exact_destination_local_search",
     "lift_to_pcpsp",
+    "pcpsp_lagrangian_bound",
     "pcpsp_lp_bound",
     "pcpsp_schedule_value",
+    "restrict_destinations",
     "solve_opbsp_exact",
 ]
 
@@ -243,6 +245,31 @@ def lift_to_pcpsp(
     )
 
 
+def restrict_destinations(inst: Pcpsp, dest: np.ndarray) -> Pcpsp:
+    """The same instance with each block allowed only the destination ``dest`` names (-1: all kept).
+
+    With ``dest = PcpspBound.preferred_destination()`` this is the RE-CUT: the cutoff the PCPSP
+    relaxation chooses, fixed, after which ``to_cpit()`` gives a CPIT whose plans are PCPSP plans of
+    the original instance with the same value. That CPIT is then scheduled by the full CPIT machinery
+    (its own critical-multiplier relaxations, ExTS, the sliding window). It is the cutoff-then-schedule
+    sequence of practice, with the cutoff taken from the relaxation instead of decided in advance:
+    the relaxation knows the opportunity cost of the plant, and a comparison of a block's two values
+    does not (a marginal ore block's plant value is positive and its dump value negative, so that
+    comparison always sends it to the plant, even when the plant tonnage it takes is worth more to the
+    richer ore below it).
+    """
+    dest = np.asarray(dest, dtype=np.int64)
+    if dest.shape != (inst.n_blocks,):
+        raise ValueError(f"need one destination per block, got shape {dest.shape}")
+    forbidden = inst.forbidden.copy()
+    chosen = np.nonzero(dest >= 0)[0]
+    if (dest[chosen] >= inst.n_destinations).any() or inst.forbidden[chosen, dest[chosen]].any():
+        raise ValueError("a block is restricted to a destination it may not use")
+    forbidden[chosen, :] = True
+    forbidden[chosen, dest[chosen]] = False
+    return replace(inst, name=f"{inst.name}-recut", forbidden=forbidden)
+
+
 def exact_destination_local_search(
     inst: Pcpsp,
     prec: Precedence,
@@ -422,17 +449,55 @@ def exact_destination_local_search(
 
 @dataclass(frozen=True)
 class PcpspBound:
-    """The PCPSP LP relaxation: an upper bound on every destination schedule of the instance."""
+    """The PCPSP LP relaxation: an upper bound on every destination schedule of the instance.
+
+    With ``solution=True`` it also carries what the relaxation says about the plan, the way the CPIT
+    relaxation seeds ExTS: each block's expected extraction time ``E_b`` (``T + 1`` for a block the
+    LP never mines) and the share of the mined part of each block that the LP sends to each
+    destination.
+    """
 
     bound: float
     seconds: float
+    #: size of the PCPSP LP, whichever method produced the bound: the Lagrangian path reports the LP
+    #: its dual stands for, not its closure graph (``n T`` nodes, the precedence and monotonicity arcs)
     n_variables: int
     n_rows: int
     status: str
+    expected_time: np.ndarray | None = None  # float64 (n,)
+    destination_share: np.ndarray | None = None  # float64 (n, D), rows sum to 1 where the LP mines
+    #: "highs-lp" (the LP solved directly) or "lagrangian" (its dual by closures; see
+    #: ``pcpsp_lagrangian_bound``), so a reader knows which number they are looking at
+    method: str = "highs-lp"
+    #: Lagrangian only: cutting-plane iterations, the estimated distance to the dual optimum (relative),
+    #: and the absolute rounding slack of the compiled closure, by which the bound may exceed the LP
+    iterations: int = 0
+    gap_estimate: float = 0.0
+    slack: float = 0.0
+
+    def preferred_destination(self) -> np.ndarray:
+        """The destination the relaxation sends most of each block to; -1 where it mines none of it."""
+        if self.destination_share is None:
+            raise ValueError("solve the bound with solution=True to read its destinations")
+        mined = self.destination_share.sum(axis=1) > 0
+        return np.where(mined, self.destination_share.argmax(axis=1), -1).astype(np.int64)
+
+
+def _pcpsp_lp_size(inst: Pcpsp, prec: Precedence) -> tuple[int, int]:
+    """Variables and rows of the PCPSP LP: x and y; monotonicity, precedence, linking, resources."""
+    n, t_max = inst.n_blocks, inst.n_periods
+    n_var = n * t_max * (1 + inst.n_destinations)
+    n_rows = n * (t_max - 1) + int(prec.n_arcs) * t_max + n * t_max + inst.n_resources * t_max
+    return n_var, n_rows
 
 
 def pcpsp_lp_bound(
-    inst: Pcpsp, prec: Precedence, *, max_rows: int = 1_500_000, time_limit: float | None = None
+    inst: Pcpsp,
+    prec: Precedence,
+    *,
+    max_rows: int = 1_500_000,
+    time_limit: float | None = None,
+    solution: bool = False,
 ) -> PcpspBound | None:
     """Solve the PCPSP LP relaxation with HiGHS. ``None`` when the model is above ``max_rows``.
 
@@ -453,8 +518,7 @@ def pcpsp_lp_bound(
 
     n, t_max, n_dest, n_res = inst.n_blocks, inst.n_periods, inst.n_destinations, inst.n_resources
     nx = n * t_max
-    n_var = nx + n * n_dest * t_max
-    n_rows = n * (t_max - 1) + int(prec.n_arcs) * t_max + n * t_max + n_res * t_max
+    n_var, n_rows = _pcpsp_lp_size(inst, prec)
     if n_rows > max_rows:
         return None
     disc = _discount(inst)
@@ -551,8 +615,180 @@ def pcpsp_lp_bound(
         return PcpspBound(
             bound=float("nan"), seconds=seconds, n_variables=n_var, n_rows=row + erow, status=str(res.message)
         )
+    expected = share = None
+    if solution:
+        x = np.clip(np.asarray(res.x[:nx]).reshape(n, t_max), 0.0, 1.0)
+        y = np.clip(np.asarray(res.x[nx:]).reshape(n, n_dest, t_max), 0.0, None)
+        prev = np.concatenate([np.zeros((n, 1)), x[:, :-1]], axis=1)
+        expected = ((x - prev) * np.arange(1, t_max + 1)).sum(axis=1) + (t_max + 1) * (1.0 - x[:, -1])
+        sent = y.sum(axis=2)
+        total = sent.sum(axis=1, keepdims=True)
+        share = np.divide(sent, total, out=np.zeros_like(sent), where=total > 1e-9)
     return PcpspBound(
-        bound=float(-res.fun), seconds=seconds, n_variables=n_var, n_rows=row + erow, status="optimal"
+        bound=float(-res.fun), seconds=seconds, n_variables=n_var, n_rows=row + erow, status="optimal",
+        expected_time=expected, destination_share=share,
+    )
+
+
+def _time_expanded(prec: Precedence, n: int, t_max: int) -> Precedence:
+    """Node ``t * n + b`` is ``x_bt``. It requires ``(a, t)`` for every predecessor ``a`` of ``b``
+    (precedence in every period) and ``(b, t + 1)`` for ``t < T - 1`` (mined by ``t`` means mined by
+    ``t + 1``), so a closure of this graph is a monotone, precedence-feasible cumulative schedule."""
+    deg = np.diff(prec.pstart).astype(np.int64)
+    counts = np.concatenate([deg + (1 if t < t_max - 1 else 0) for t in range(t_max)])
+    starts = np.zeros(n * t_max + 1, dtype=np.int64)
+    np.cumsum(counts, out=starts[1:])
+    plist = np.empty(int(starts[-1]), dtype=np.int64)
+    within = np.arange(int(deg.sum()), dtype=np.int64) - np.repeat(np.cumsum(deg) - deg, deg)
+    for t in range(t_max):
+        base = starts[t * n:(t + 1) * n]
+        plist[np.repeat(base, deg) + within] = np.asarray(prec.plist, dtype=np.int64) + t * n
+        if t < t_max - 1:
+            plist[base + deg] = np.arange(n, dtype=np.int64) + (t + 1) * n
+    return Precedence(pstart=starts, plist=plist)
+
+
+def pcpsp_lagrangian_bound(
+    inst: Pcpsp,
+    prec: Precedence,
+    *,
+    max_iter: int = 400,
+    tol: float = 1e-6,
+    stall: int = 40,
+) -> PcpspBound:
+    """The PCPSP LP bound through its Lagrangian dual: closures instead of one huge LP.
+
+    Dualise the ``R T`` capacity rows with multipliers ``mu_rt >= 0``. What is left is, for each block
+    and period, the choice of the destination worth most at those prices, and a precedence-closed,
+    monotone cumulative schedule, which is a maximum closure on the time-expanded graph:
+
+    .. code-block:: text
+
+        g_bt(mu) = max_d ( disc_t v_bd - sum_r mu_rt q_rbd )
+        L(mu)    = sum_rt mu_rt c_rt + max over closures of sum_bt (g_bt - g_b,t+1) x_bt
+
+    ``L(mu)`` is an upper bound on every destination schedule for EVERY ``mu >= 0``, and its minimum is
+    the PCPSP LP value (the inner problem is a closure, totally unimodular, so the dual has no gap with
+    the LP). The closure is the compiled one, which rounds weights UP, so each ``L(mu)`` can only
+    over-estimate: the reported bound is valid at any iteration, and exceeds the LP by at most the
+    returned ``slack`` once converged.
+
+    ``mu`` is driven by a cutting-plane method in the ``R T`` multipliers with a box trust region
+    around the best point (a serious step doubles the box, a null step shrinks it), stopping when the
+    model's lower estimate is within ``max(tol |bound|, 2 slack)`` of the best value with the box not
+    binding, after ``stall`` iterations without a serious step, or at ``max_iter``.
+
+    The relaxed schedule at the best ``mu`` is returned as one-hot ``destination_share`` and
+    ``expected_time``: the destination each block takes at those prices, with the plant's opportunity
+    cost priced in, which is what the re-cut fixes (``restrict_destinations``).
+
+    Why it exists: the direct LP (``pcpsp_lp_bound``) has about ``n T`` precedence rows times the arc
+    density; on a 14,400-block, ten-period deposit that is 1.44 million rows, and HiGHS did not finish
+    two such instances in six and a half hours. Here the same bound took minutes, and on a 6,912-block
+    instance it lands 4.8 parts per million above the exact LP (316,476,932 against 316,475,407).
+    """
+    import time
+
+    from scipy.optimize import linprog
+
+    from .fastcut import max_closure_fast
+
+    t0 = time.perf_counter()
+    n, t_max, n_dest, n_res = inst.n_blocks, inst.n_periods, inst.n_destinations, inst.n_resources
+    disc = _discount(inst)
+    coef = np.asarray(inst.coef, dtype=np.float64)  # (R, n, D)
+    cap = np.asarray(inst.limit, dtype=np.float64)  # (R, T)
+    value = np.where(inst.forbidden, -np.inf, np.nan_to_num(inst.value, neginf=-np.inf, posinf=0.0))
+    usable = np.isfinite(value).any(axis=1)  # a block with every destination forbidden is never mined
+    graph = _time_expanded(prec, n, t_max)
+    big = float(np.abs(np.where(np.isfinite(value), value, 0.0)).sum() * max(1.0, float(disc.max()))) + 1.0
+
+    def evaluate(mu: np.ndarray):
+        g = disc[:, None, None] * value[None, :, :] - np.einsum("rt,rbd->tbd", mu, coef)
+        g = np.where(np.isfinite(g), g, -np.inf)
+        best_d = np.argmax(g, axis=2)  # (T, n)
+        gbest = np.take_along_axis(g, best_d[:, :, None], axis=2)[:, :, 0]
+        gbest = np.where(usable[None, :], gbest, -big)
+        w = gbest - np.vstack([gbest[1:], np.zeros((1, n))])
+        res = max_closure_fast(w.ravel(), graph)
+        x = res.mask.reshape(t_max, n)
+        inc = x & ~np.vstack([np.zeros((1, n), dtype=bool), x[:-1]])
+        use = np.zeros((n_res, t_max))
+        for t in range(t_max):
+            bs = np.nonzero(inc[t])[0]
+            if bs.size:
+                use[:, t] = coef[:, bs, best_d[t, bs]].sum(axis=1)
+        return float((mu * cap).sum() + res.value), cap - use, inc, best_d, float(res.slack)
+
+    # trust-region scale per resource: a value per unit of resource that no multiplier needs to exceed
+    finite_v = np.where(np.isfinite(value), np.abs(value), 0.0)
+    def _smallest_positive(row: np.ndarray) -> float:
+        pos = row[row > 0]
+        return float(pos.min()) if pos.size else 1.0
+
+    peak = float((disc[0] * finite_v).max())
+    scale = np.array([peak / max(1e-12, _smallest_positive(coef[r])) for r in range(n_res)])
+    center = np.zeros((n_res, t_max))
+    best_val, sg, inc, best_d, slack = evaluate(center)
+    best = (best_val, center.copy(), inc, best_d)
+    cuts = [(center.copy(), best_val, sg)]
+    delta = np.repeat(scale[:, None], t_max, axis=1) * 0.05
+    model = -np.inf
+    since_serious = 0
+    iterations = 0
+    status = "iteration limit"
+    nv = n_res * t_max + 1
+    for _ in range(max_iter):
+        iterations += 1
+        a_ub = np.zeros((len(cuts), nv))
+        b_ub = np.zeros(len(cuts))
+        for k, (muk, lk, sk) in enumerate(cuts):
+            a_ub[k, :-1] = sk.ravel()
+            a_ub[k, -1] = -1.0
+            b_ub[k] = -(lk - float((sk * muk).sum()))
+        lo = np.maximum(0.0, center - delta).ravel()
+        hi = (center + delta).ravel()
+        cvec = np.zeros(nv)
+        cvec[-1] = 1.0
+        mres = linprog(cvec, A_ub=a_ub, b_ub=b_ub, bounds=list(zip(lo, hi, strict=True)) + [(None, None)],
+                       method="highs")
+        if mres.x is None:
+            status = f"master LP failed: {mres.message}"
+            break
+        mu = mres.x[:-1].reshape(n_res, t_max)
+        model = float(mres.x[-1])
+        val, sg, inc, best_d, s_now = evaluate(mu)
+        slack = max(slack, s_now)
+        cuts.append((mu.copy(), val, sg))
+        if val < best[0] - 0.1 * max(best[0] - model, 0.0):
+            best = (val, mu.copy(), inc, best_d)
+            center = mu.copy()
+            delta = delta * 2.0
+            since_serious = 0
+        else:
+            delta = delta * 0.7
+            since_serious += 1
+        on_edge = bool(np.any(np.isclose(mu.ravel(), hi) & (hi > lo + 1e-12)))
+        if best[0] - model <= max(tol * abs(best[0]), 2.0 * slack) and not on_edge:
+            status = "converged"
+            break
+        if since_serious >= stall:
+            status = "stalled"
+            break
+
+    _, _, inc, best_d = best
+    expected = np.full(n, t_max + 1.0)
+    share = np.zeros((n, n_dest))
+    for t in range(t_max):
+        bs = np.nonzero(inc[t])[0]
+        expected[bs] = t + 1.0
+        share[bs, best_d[t, bs]] = 1.0
+    n_var, n_rows = _pcpsp_lp_size(inst, prec)
+    return PcpspBound(
+        bound=float(best[0]), seconds=time.perf_counter() - t0, n_variables=n_var,
+        n_rows=n_rows, status=status, expected_time=expected, destination_share=share,
+        method="lagrangian", iterations=iterations,
+        gap_estimate=float((best[0] - model) / abs(best[0])) if best[0] else 0.0, slack=slack,
     )
 
 
