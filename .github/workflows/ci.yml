@@ -38,7 +38,8 @@ jobs:
       - name: Repo-integrity guards
         run: |
           fail=0
-          if git ls-files | grep -qE '(^|/)\.env(\..+)?$' && ! git ls-files | grep -qx '.env.example'; then
+          envs="$(git ls-files | grep -E '(^|/)\.env(\..+)?$' | grep -vE '(^|/)\.env(\..+)?\.example$' || true)"
+          if [ -n "$envs" ]; then
             echo "::error::a real .env is tracked"; fail=1; fi
           if git ls-files | grep -qiE '(^|/)\.?venv|\.(dll|so|dylib|pt|pth|parquet|h5)$'; then
             echo "::error::a venv or heavy binary is tracked"; fail=1; fi
