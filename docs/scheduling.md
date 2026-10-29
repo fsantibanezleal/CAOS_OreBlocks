@@ -352,9 +352,12 @@ instance where only mining binds and every destination consumes it alike, the PC
 CPIT LP, and a test asserts it against the critical multiplier algorithm: two unrelated solvers on one
 quantity.
 
-`destinations.solve_opbsp_exact` solves the fully binary formulation exactly with HiGHS, in the
-variables Jelvez et al. use, and returns `None` above a size budget rather than passing a heuristic
-answer off as an exact one.
+`destinations.solve_opbsp_with_status` solves the fully binary formulation in the variables Jelvez
+et al. use and returns a receipt containing the solver status, backend, model dimensions, runtime,
+incumbent, NPV upper bound, gap, and node count. A time-limited feasible schedule is available with
+`certified_optimal=False`; it must not be called an exact teacher. The compatibility API
+`solve_opbsp_exact` returns a schedule only when optimality is certified. An over-budget solve returns
+an explicit `variable limit` receipt rather than passing a heuristic answer off as an exact one.
 
 **The re-cut (0.6.1): let the relaxation choose the cutoff.** The destination TopoSort compares a
 block's discounted values at its destinations and nothing else. When the plant binds that comparison

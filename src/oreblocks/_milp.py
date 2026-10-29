@@ -42,6 +42,7 @@ class MilpResult:
     start_rejected: bool = False  # a start was passed and failed the feasibility re-check
     nodes: int = -1  # branch-and-bound nodes the solver explored (-1 when the backend does not say)
     gap: float = float("nan")  # the solver's final relative MIP gap
+    dual_bound: float = float("nan")  # best known lower bound for this minimisation
 
 
 def _highspy():
@@ -126,13 +127,17 @@ def solve_binary_program(
     backend = milp_backend()
     x: np.ndarray | None = None
     status = "not-run"
-    nodes, gap = -1, float("nan")
+    nodes, gap, dual_bound = -1, float("nan"), float("nan")
     try:
         if hs is not None:
-            x, status, nodes, gap = _solve_highspy(hs, c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit,
-                                                   start if warm else None, node_limit)
+            x, status, nodes, gap, dual_bound = _solve_highspy(
+                hs, c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit,
+                start if warm else None, node_limit,
+            )
         else:  # pragma: no cover - exercised only without the extra
-            x, status = _solve_scipy(c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit, node_limit)
+            x, status, nodes, gap, dual_bound = _solve_scipy(
+                c, a_csr, lo, hi, lb_v, ub_v, mip_gap, time_limit, node_limit,
+            )
     except Exception as exc:  # noqa: BLE001 - a solver failure must never lose the start
         status = f"error: {type(exc).__name__}"
         x = None
@@ -145,10 +150,10 @@ def solve_binary_program(
     if x is not None:
         obj = float(c @ x)
         if start is None or obj <= start_obj + 1e-9 * max(1.0, abs(start_obj)):
-            return MilpResult(x, obj, backend, status, False, start_obj, rejected, nodes, gap)
+            return MilpResult(x, obj, backend, status, False, start_obj, rejected, nodes, gap, dual_bound)
     if start is not None:
-        return MilpResult(start.copy(), start_obj, backend, status, True, start_obj, rejected, nodes, gap)
-    return MilpResult(None, float("inf"), backend, status, False, None, rejected, nodes, gap)
+        return MilpResult(start.copy(), start_obj, backend, status, True, start_obj, rejected, nodes, gap, dual_bound)
+    return MilpResult(None, float("inf"), backend, status, False, None, rejected, nodes, gap, dual_bound)
 
 
 def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start, node_limit=None):
@@ -186,9 +191,10 @@ def _solve_highspy(hs, c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, start, nod
     info = h.getInfo()
     # a primal solution exists whenever HiGHS found any feasible point (optimal, or stopped on a limit)
     nodes, gap = int(info.mip_node_count), float(info.mip_gap)
+    bound = float(info.mip_dual_bound)
     if int(info.primal_solution_status) == 2:
-        return np.asarray(h.getSolution().col_value, dtype=np.float64), name, nodes, gap
-    return None, name, nodes, gap
+        return np.asarray(h.getSolution().col_value, dtype=np.float64), name, nodes, gap, bound
+    return None, name, nodes, gap, bound
 
 
 def _solve_scipy(c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, node_limit=None):  # pragma: no cover
@@ -206,6 +212,9 @@ def _solve_scipy(c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, node_limit=None)
         bounds=Bounds(lb, ub),
         options=options,
     )
+    nodes = int(getattr(res, "mip_node_count", -1))
+    gap = float(getattr(res, "mip_gap", float("nan")))
+    bound = float(getattr(res, "mip_dual_bound", float("nan")))
     if res.x is None:
-        return None, str(res.message)
-    return np.asarray(res.x), str(res.message)
+        return None, str(res.message), nodes, gap, bound
+    return np.asarray(res.x), str(res.message), nodes, gap, bound

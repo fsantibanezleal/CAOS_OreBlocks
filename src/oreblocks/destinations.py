@@ -46,6 +46,7 @@ from .upit import solve_upit
 
 __all__ = [
     "DestinationSchedule",
+    "OpbspSolveResult",
     "PcpspBound",
     "destination_toposort",
     "exact_destination_local_search",
@@ -55,6 +56,7 @@ __all__ = [
     "pcpsp_schedule_value",
     "restrict_destinations",
     "solve_opbsp_exact",
+    "solve_opbsp_with_status",
 ]
 
 
@@ -72,6 +74,23 @@ class DestinationSchedule:
     #: plant in that period. An input in CPIT, a result here.
     effective_cutoff: np.ndarray
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class OpbspSolveResult:
+    """A bounded OPBSP MILP attempt, including incumbent and proof metadata."""
+
+    schedule: DestinationSchedule | None
+    status: str
+    backend: str
+    n_variables: int
+    n_constraints: int
+    seconds: float
+    objective: float | None  # incumbent NPV, if any
+    best_bound: float | None  # valid upper bound on NPV, if reported by the backend
+    mip_gap: float | None
+    nodes: int
+    certified_optimal: bool
 
 
 def _discount(inst: Pcpsp) -> np.ndarray:
@@ -794,7 +813,7 @@ def pcpsp_lagrangian_bound(
     )
 
 
-def solve_opbsp_exact(
+def solve_opbsp_with_status(
     inst: Pcpsp,
     prec: Precedence,
     *,
@@ -802,11 +821,12 @@ def solve_opbsp_exact(
     time_limit: float = 300.0,
     mip_gap: float = 1e-4,
     grade: np.ndarray | None = None,
-) -> DestinationSchedule | None:
-    """OPBSP solved EXACTLY as a mixed-integer program (Jelvez et al. 2018, equations 3-10).
+) -> OpbspSolveResult:
+    """Solve OPBSP and preserve a feasible incumbent separately from its proof status.
 
-    Returns ``None`` when the instance is larger than ``max_variables`` rather than pretending a
-    heuristic answer is an exact one. Needs scipy (``oreblocks[milp]``).
+    A time-limited incumbent is returned as a schedule with ``certified_optimal=False`` and its
+    backend status/bound. An oversized instance returns a refusal receipt. Needs scipy
+    (``oreblocks[milp]``).
 
     Variables ``z_bdt in {0,1}``: block ``b`` is extracted in period ``t`` and sent to destination
     ``d``. One binary family carries both decisions, so nothing is linearised and nothing is
@@ -821,14 +841,20 @@ def solve_opbsp_exact(
     The precedence row is the cumulative form: "by period t, b has been mined at most as much as a
     has", which is exactly ``x_bt <= x_at`` written over the destination-indexed binaries.
     """
+    from time import perf_counter
+
     from scipy.sparse import coo_matrix
 
-    from ._milp import milp_backend, solve_binary_program
+    from ._milp import solve_binary_program
 
+    started = perf_counter()
     n, t_max, n_dest = inst.n_blocks, inst.n_periods, inst.n_destinations
     n_var = n * n_dest * t_max
     if n_var > max_variables:
-        return None
+        return OpbspSolveResult(
+            None, "variable limit", "not-run", n_var, 0, perf_counter() - started,
+            None, None, None, -1, False,
+        )
 
     d = _discount(inst)
     vid = lambda b, dd, t: (b * n_dest + dd) * t_max + t  # noqa: E731
@@ -885,10 +911,14 @@ def solve_opbsp_exact(
         c, a_mat, np.array(lo), np.array(hi), lb=np.zeros(n_var), ub=ub, mip_gap=mip_gap,
         time_limit=time_limit,
     )
-    # EXACT means the solver proved the gap: highspy hands back its incumbent when the clock stops,
-    # where scipy reported failure, and a time-limited incumbent must not be labelled exact
-    if res.x is None or res.status != "Optimal":
-        return None
+    # The incumbent and proof are separate: a useful feasible schedule can exist without an
+    # optimality certificate, and downstream training must be able to reject it as a teacher.
+    if res.x is None:
+        return OpbspSolveResult(
+            None, res.status, res.backend, n_var, r, perf_counter() - started, None,
+            -res.dual_bound if np.isfinite(res.dual_bound) else None,
+            res.gap if np.isfinite(res.gap) else None, res.nodes, False,
+        )
 
     x = res.x
     period = np.full(n, -1, dtype=np.int64)
@@ -906,13 +936,34 @@ def solve_opbsp_exact(
 
     cutoff = _effective_cutoff(inst, period, dest, grade)
 
-    return DestinationSchedule(
-        method="opbsp-exact(milp)",
+    schedule = DestinationSchedule(
+        method="opbsp-exact(milp)" if res.status == "Optimal" else "opbsp-incumbent(milp)",
         period_of_block=period,
         destination_of_block=dest,
         npv=float(npv),
         mined_blocks=int((period >= 0).sum()),
-        exact=True,
+        exact=res.status == "Optimal",
         effective_cutoff=cutoff,
-        notes=f"{milp_backend()} MILP, {n_var} binaries, {r} rows, mip_rel_gap {mip_gap}",
+        notes=f"{res.backend} MILP, {n_var} binaries, {r} rows, status {res.status}, mip_rel_gap {mip_gap}",
     )
+    return OpbspSolveResult(
+        schedule, res.status, res.backend, n_var, r, perf_counter() - started, schedule.npv,
+        -res.dual_bound if np.isfinite(res.dual_bound) else None,
+        res.gap if np.isfinite(res.gap) else None, res.nodes, res.status == "Optimal",
+    )
+
+
+def solve_opbsp_exact(
+    inst: Pcpsp,
+    prec: Precedence,
+    *,
+    max_variables: int = 40_000,
+    time_limit: float = 300.0,
+    mip_gap: float = 1e-4,
+    grade: np.ndarray | None = None,
+) -> DestinationSchedule | None:
+    """Return only a solver-certified OPBSP optimum; use ``solve_opbsp_with_status`` for receipts."""
+    result = solve_opbsp_with_status(
+        inst, prec, max_variables=max_variables, time_limit=time_limit, mip_gap=mip_gap, grade=grade,
+    )
+    return result.schedule if result.certified_optimal else None
