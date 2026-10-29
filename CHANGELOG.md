@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.4] - 2026-10-29
+
+### Added
+- `solve_opbsp_with_status` returns the feasible schedule, solver status, backend, model dimensions,
+  runtime, incumbent NPV, best-known NPV upper bound, relative gap, node count, and whether the solve
+  certified optimality. A time-limited incumbent remains explicitly uncertified.
+- The MILP receipt now carries the backend's dual bound; SciPy and highspy paths preserve solver
+  status and available bound metadata.
+
+### Fixed
+- `solve_opbsp_exact` remains fail-closed: it returns a schedule only when the receipt certifies
+  optimality. Over-budget refusal is available with an explicit reason through the receipt API.
+
 ## [0.6.3] - 2026-10-07
 
 Display version `0.06.003`. One regression of 0.6.2, found by the first case of a downstream re-bake.

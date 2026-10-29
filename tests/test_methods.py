@@ -180,6 +180,29 @@ def test_exact_opbsp_matches_or_beats_the_heuristic_and_respects_capacity():
             assert used <= inst.limit[r][t] + 1e-6
 
 
+def test_opbsp_solver_receipt_preserves_proof_and_bound_metadata():
+    twin, inst = _pcpsp(dims=(7, 7, 4), periods=3)
+    receipt = ob.solve_opbsp_with_status(inst, twin.precedence, max_variables=40_000, time_limit=60)
+    assert receipt.certified_optimal
+    assert receipt.schedule is not None and receipt.schedule.exact
+    assert receipt.status == "Optimal"
+    assert receipt.backend.startswith("highspy")
+    assert receipt.n_variables == inst.n_blocks * inst.n_destinations * inst.n_periods
+    assert receipt.n_constraints > 0 and receipt.seconds >= 0
+    assert receipt.objective == pytest.approx(receipt.schedule.npv)
+    assert receipt.best_bound is not None
+    assert receipt.best_bound >= receipt.objective - 1e-6 * abs(receipt.objective)
+
+
+def test_opbsp_solver_receipt_explains_budget_refusal():
+    twin, inst = _pcpsp(dims=(16, 16, 9), periods=8)
+    receipt = ob.solve_opbsp_with_status(inst, twin.precedence, max_variables=1000)
+    assert receipt.schedule is None
+    assert not receipt.certified_optimal
+    assert receipt.status == "variable limit"
+    assert receipt.n_variables > 1000
+
+
 def _assert_destination_plan_feasible(inst, prec, plan):
     npv, use = ob.pcpsp_schedule_value(inst, plan.period_of_block, plan.destination_of_block)
     assert npv == pytest.approx(plan.npv, rel=1e-9, abs=1e-6)
