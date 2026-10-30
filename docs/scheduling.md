@@ -243,12 +243,21 @@ LP and the strongest correctness check in the suite.
 [doi:10.1007/s10589-017-9946-1](https://doi.org/10.1007/s10589-017-9946-1)). BZ is a speed result and
 a joint-bound result, never a tighter-than-LP one.
 
-### 9.2 The exact C-PIT[D] local search
+### 9.2 The C-PIT[D] local search and its optimality receipt
 
-`refine.exact_local_search` implements Chicoisne et al. section 3.3: fix every block outside a small
-set `D` at its incumbent period and re-solve the restricted problem EXACTLY as a MILP. All three of
-their neighbourhood constructions, chosen with equal probability: a connected subset of a random
-block's predecessors, the same with successors, and the blocks scheduled in `t-1, t, t+1`.
+`refine.exact_local_search` implements the C-PIT[D] neighbourhoods of Chicoisne et al. section 3.3:
+fix every block outside a small set `D` at its incumbent period and re-solve the restricted problem
+as a MILP. All three of their neighbourhood constructions are sampled: a connected subset of a random
+block's predecessors, the same with successors, and the blocks scheduled in `t-1, t, t+1`. A solve is
+an exact neighborhood result only when its receipt reports an optimal status; a node- or time-limited
+incumbent is feasible but is not an optimality proof.
+
+Pass `node_limit` for a deterministic branch-and-bound budget. `ScheduleResult.local_search_receipt`
+records each attempted neighborhood's backend status, elapsed time, explored nodes, relative gap,
+incumbent NPV and neighborhood NPV upper bound. Its `certified_optimal` property is true only when
+all requested neighborhoods were attempted and each one was proven optimal. `skipped_rounds` makes
+small or infeasible neighborhoods visible. The incumbent schedule remains feasible and cannot be
+worse than the start.
 
 This is the rung `improve_schedule` is explicitly not. The shift neighbourhood cannot move a block and
 its cone together; this can, and the difference is the last few percent of the gap.
@@ -319,8 +328,9 @@ compound it. Measured on the same twin:
 
 The floor was the answer on 2 of the 10 windows. On a 6,912-block porphyry twin the same comparison gives
 1.274 percent warm (47.9 min) and 1.113 percent cold with the floor (52.7 min), against 1.34 on 0.6.1. `warm_start=True` keeps the 0.6.2 behaviour for a caller
-who wants the speed. The exact local searches keep their warm start: they stop at a 1e-4 gap and accept
-only proven improvements, so a start cannot anchor them.
+who wants the speed. The exact local searches keep their warm start and accept only improving feasible
+incumbents. Their receipts distinguish a proven neighborhood optimum from a solve that stopped at a
+configured limit.
 
 ### 9.4 Destinations: when the cutoff grade becomes an output
 
@@ -341,7 +351,9 @@ is the CPIT value. `destinations.exact_destination_local_search` is the C-PIT[D]
 destinations: the same three neighbourhoods, a restricted model whose free blocks carry cumulative
 extraction variables `y_it` and binary destination variables `z_idt` linked by
 `sum_d z_idt = y_it - y_i,t-1`, solved with HiGHS. Started from a lifted plan it can never end below
-the CPIT plan, which is the property the richer problem has to show.
+the CPIT plan, which is the property the richer problem has to show. `DestinationSchedule.local_search_receipt`
+records per-neighborhood status and proof metadata; `node_limit` gives a deterministic work cap, and
+a limit-hit incumbent is never reported as an optimal restricted solve.
 
 `destinations.pcpsp_lp_bound` solves the PCPSP LP relaxation (cumulative extraction monotone and closed
 in every period, destination fractions linked to it, resource rows over the fractions) with HiGHS over

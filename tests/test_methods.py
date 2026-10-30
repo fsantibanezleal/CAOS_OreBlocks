@@ -125,6 +125,56 @@ def test_exact_local_search_beats_the_shift_neighbourhood_at_least_once():
     assert exact.npv >= shift.npv - 1e-9
 
 
+def test_cpit_local_search_preserves_node_bounded_solver_receipts():
+    twin, inst = _instance(n_res=2)
+    seed = ob.toposort_schedule(inst, twin.precedence, weight="greedy")
+    options = dict(d_max=40, rounds=3, node_limit=1, time_limit=None)
+
+    first = ob.exact_local_search(inst, twin.precedence, seed, **options)
+    second = ob.exact_local_search(inst, twin.precedence, seed, **options)
+
+    receipt = first.local_search_receipt
+    assert receipt is not None
+    assert receipt.node_limit == 1 and receipt.time_limit_seconds is None
+    assert receipt.requested_rounds == 3
+    assert len(receipt.neighborhoods) + receipt.skipped_rounds == 3
+    assert first.npv >= seed.npv - 1e-9
+    assert np.array_equal(first.period_of_block, second.period_of_block)
+    for neighborhood in receipt.neighborhoods:
+        assert neighborhood.status
+        assert neighborhood.backend.startswith("highspy")
+        assert neighborhood.seconds >= 0
+        if neighborhood.incumbent_npv is not None and neighborhood.upper_bound_npv is not None:
+            assert neighborhood.upper_bound_npv >= neighborhood.incumbent_npv - 1e-6
+
+
+def test_limit_hit_receipt_is_not_an_optimality_proof():
+    from oreblocks.receipts import LocalSearchReceipt, NeighborhoodSolveReceipt
+
+    stopped = NeighborhoodSolveReceipt(
+        round_index=1,
+        backend="highspy 1.11.0",
+        status="Reached node limit",
+        seconds=1.0,
+        nodes=10,
+        mip_gap=0.25,
+        incumbent_npv=100.0,
+        upper_bound_npv=125.0,
+        used_start=False,
+        improved=True,
+    )
+    receipt = LocalSearchReceipt(
+        neighborhoods=(stopped,),
+        requested_rounds=1,
+        skipped_rounds=0,
+        mip_gap_target=1e-4,
+        time_limit_seconds=None,
+        node_limit=10,
+    )
+    assert not stopped.certified_optimal
+    assert not receipt.certified_optimal
+
+
 # ------------------------------------------------------------------------------------------------
 # destinations
 # ------------------------------------------------------------------------------------------------
@@ -251,6 +301,22 @@ def test_lift_keeps_the_cpit_value_and_the_destination_search_never_loses_it():
     out = ob.exact_destination_local_search(inst, prec, lift, rounds=8, d_max=80, grade=twin.deposit.grade)
     assert out.npv >= lift.npv - 1e-6 * abs(lift.npv)
     _assert_destination_plan_feasible(inst, prec, out)
+
+
+def test_destination_local_search_preserves_node_bounded_solver_receipts():
+    twin, inst = _pcpsp(dims=(8, 8, 5), periods=4)
+    start = ob.destination_toposort(inst, twin.precedence, grade=twin.deposit.grade)
+    out = ob.exact_destination_local_search(
+        inst, twin.precedence, start, rounds=2, d_max=60, node_limit=1, time_limit=None,
+        grade=twin.deposit.grade,
+    )
+    receipt = out.local_search_receipt
+    assert receipt is not None
+    assert receipt.node_limit == 1 and receipt.time_limit_seconds is None
+    assert receipt.requested_rounds == 2
+    assert len(receipt.neighborhoods) + receipt.skipped_rounds == 2
+    assert out.npv >= start.npv - 1e-6 * abs(start.npv)
+    _assert_destination_plan_feasible(inst, twin.precedence, out)
 
 
 def test_destination_toposort_is_cpit_toposort_when_the_plant_never_binds():

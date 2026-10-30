@@ -93,9 +93,9 @@ Full detail, including the three file-format traps and the explicit list of what
 | `cpit_lp_relaxation` / `cpit_bound_two_resources` | the critical multiplier bound (exact LP for one resource), Algorithm 4 |
 | `cpit_bz_bound` | the joint LP bound over every resource, Bienstock-Zuckerberg |
 | `toposort_schedule` | GrTS, GeTS (successor-set weights) and ExTS (LP expected times) |
-| `improve_schedule` / `exact_local_search` | shift local search; the exact C-PIT[D] re-solve |
+| `improve_schedule` / `exact_local_search` | shift local search; C-PIT[D] neighborhoods with per-solve proof receipts |
 | `sliding_window_schedule` | Cullenbine, Wood and Newman 2011, LP-guided candidate set |
-| `destination_toposort` / `exact_destination_local_search` / `pcpsp_lp_bound` | PCPSP: destination choice, OPBSP-[D], the PCPSP LP bound |
+| `destination_toposort` / `exact_destination_local_search` / `pcpsp_lp_bound` | PCPSP: destination choice, OPBSP-[D] with proof receipts, the PCPSP LP bound |
 | `enforce_min_width` / `schedule_coherence` | capacity-feasible sliver absorption; components and widths per period |
 | `perturb_values` / `evaluate_across` | a correlated, mean-preserving value ensemble and the robust choice |
 
