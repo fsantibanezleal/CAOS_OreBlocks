@@ -1,11 +1,12 @@
-"""Refinement: the exact C-PIT[D] local search, cutoff-grade policy, and operational smoothing.
+"""Refinement: bounded C-PIT[D] neighborhood search, cutoff-grade policy, and operational smoothing.
 
 Three things a schedule needs after a rounding heuristic has produced it, each from a different part
 of the literature and each with a different honest status.
 
-**1. The exact C-PIT[D] local search** (Chicoisne, Espinoza, Goycoolea, Moreno and Rubio, Operations
+**1. The C-PIT[D] local search** (Chicoisne, Espinoza, Goycoolea, Moreno and Rubio, Operations
 Research 60(3):517-528, 2012, doi:10.1287/opre.1120.1050, section 3.3). Fix every block outside a
-small set ``D`` at its incumbent period and re-solve the restricted problem EXACTLY. Their three
+small set ``D`` at its incumbent period and re-solve the restricted problem as a MILP. Its receipt
+reports whether each neighborhood reached proven optimality. Their three
 neighbourhood constructions, chosen with equal probability:
 
 1. a random scheduled block ``a``, plus a connected subset of its predecessors ``B-(a)``,
@@ -35,12 +36,14 @@ the difference is the honest price of operability.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
 
 from .minelib_models import Cpit
 from .precedence import Precedence
+from .receipts import LocalSearchReceipt, NeighborhoodSolveReceipt
 from .schedule import (  # noqa: PLC2701
     ScheduleResult,
     _finite_values,
@@ -110,9 +113,10 @@ def exact_local_search(
     rounds: int = 24,
     seed: int = 7,
     time_limit: float | None = 20.0,
+    node_limit: int | None = None,
     mip_gap: float = 1e-5,
 ) -> ScheduleResult:
-    """Chicoisne et al. section 3.3: re-solve a restricted C-PIT EXACTLY, repeatedly.
+    """Chicoisne et al. section 3.3: repeatedly optimize restricted C-PIT[D] MILP neighborhoods.
 
     Every accepted move is a proven improvement of the restricted problem, and the objective is
     monotone by construction because the incumbent is always feasible for the restricted model. Needs
@@ -121,9 +125,8 @@ def exact_local_search(
 
     Since 0.6.2 every re-solve STARTS from the incumbent restricted to the neighbourhood (it is
     feasible for the restricted model by construction), so the solver never opens below the plan it
-    is improving. ``time_limit=None`` stops on the relative MIP gap alone: a time limit makes the
-    answer depend on the machine and its load, which is the wrong trade for a bake whose artifacts
-    are committed as evidence.
+    is improving. A node limit provides a deterministic work budget. The returned receipt separates
+    feasible incumbents from neighborhood optimality proofs.
     """
     from scipy.sparse import coo_matrix
 
@@ -137,10 +140,18 @@ def exact_local_search(
 
     period = result.period_of_block.copy()
     accepted = 0
+    skipped = 0
+    receipts: list[NeighborhoodSolveReceipt] = []
 
-    for _ in range(rounds):
+    if node_limit is not None and node_limit < 0:
+        raise ValueError("node_limit must be nonnegative or None")
+    if time_limit is not None and time_limit <= 0:
+        raise ValueError("time_limit must be positive or None")
+
+    for round_index in range(rounds):
         dset = _neighbourhood(rng, prec, sstart, slist, period, d_max)
         if dset.size < 4:
+            skipped += 1
             continue
         pos = {int(b): i for i, b in enumerate(dset)}
         k = dset.size
@@ -214,15 +225,28 @@ def exact_local_search(
                     add(entries, -np.inf, float(inst.limit[rr][t] - used[rr, t]))
 
         if r == 0:
+            skipped += 1
             continue
         a_mat = coo_matrix((data, (rows, cols)), shape=(r, n_var)).tocsr()
         tt = np.arange(t_max)
         here = period[dset]
         x0 = ((here[:, None] >= 0) & (tt[None, :] >= here[:, None])).astype(np.float64).ravel()
+        solve_started = time.perf_counter()
         res = solve_binary_program(
-            c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit, start=x0,
+            c, a_mat, np.array(lo), np.array(hi), mip_gap=mip_gap, time_limit=time_limit,
+            node_limit=node_limit, start=x0,
         )
+        solve_seconds = time.perf_counter() - solve_started
+        incumbent_npv = None if res.x is None else -float(res.objective)
+        upper_bound_npv = -float(res.dual_bound) if np.isfinite(res.dual_bound) else None
         if res.x is None or res.used_start:
+            receipts.append(NeighborhoodSolveReceipt(
+                round_index=round_index + 1, backend=res.backend, status=res.status,
+                seconds=solve_seconds, nodes=res.nodes,
+                mip_gap=float(res.gap) if np.isfinite(res.gap) else None,
+                incumbent_npv=incumbent_npv, upper_bound_npv=upper_bound_npv,
+                used_start=res.used_start, improved=False,
+            ))
             continue
 
         y = res.x.reshape(k, t_max)
@@ -232,13 +256,27 @@ def exact_local_search(
             cand[b] = int(hit[0]) if hit.size else -1
         npv_new, _, _ = schedule_value(inst, cand)
         npv_old, _, _ = schedule_value(inst, period)
-        if npv_new > npv_old + 1e-9 * max(1.0, abs(npv_old)):
+        improved = npv_new > npv_old + 1e-9 * max(1.0, abs(npv_old))
+        if improved:
             period = cand
             accepted += 1
+        receipts.append(NeighborhoodSolveReceipt(
+            round_index=round_index + 1, backend=res.backend, status=res.status,
+            seconds=solve_seconds, nodes=res.nodes,
+            mip_gap=float(res.gap) if np.isfinite(res.gap) else None,
+            incumbent_npv=incumbent_npv, upper_bound_npv=upper_bound_npv,
+            used_start=res.used_start, improved=improved,
+        ))
 
     npv, per_val, per_res = schedule_value(inst, period)
     if npv < result.npv - 1e-6 * max(1.0, abs(result.npv)):
-        raise AssertionError(f"exact local search made it worse: {result.npv} -> {npv}")
+        raise AssertionError(f"local search made it worse: {result.npv} -> {npv}")
+    receipt = LocalSearchReceipt(
+        neighborhoods=tuple(receipts), requested_rounds=rounds, skipped_rounds=skipped,
+        mip_gap_target=mip_gap, time_limit_seconds=time_limit, node_limit=node_limit,
+    )
+    optimal_count = sum(item.certified_optimal for item in receipts)
+    budget = f", node limit {node_limit}" if node_limit is not None else ""
     return ScheduleResult(
         method=f"{result.method}+cpitD-ls",
         period_of_block=period,
@@ -248,10 +286,10 @@ def exact_local_search(
         per_period_resource=per_res,
         mined_blocks=int((period >= 0).sum()),
         heuristic=True,
-        notes=(
-            f"{accepted} of {rounds} exact C-PIT[D] re-solves improved the incumbent; "
-            f"{milp_backend()}, each re-solve started from the incumbent"
-        ),
+        notes=(f"{accepted} of {len(receipts)} C-PIT[D] neighborhood MILPs improved the incumbent; "
+               f"{optimal_count} were proven optimal{budget}; {milp_backend()}, each solve started "
+               "from the incumbent"),
+        local_search_receipt=receipt,
     )
 
 

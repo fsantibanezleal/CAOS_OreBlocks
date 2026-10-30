@@ -35,12 +35,14 @@ rather than hidden.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 
 import numpy as np
 
 from .minelib_models import Pcpsp
 from .precedence import Precedence
+from .receipts import LocalSearchReceipt, NeighborhoodSolveReceipt
 from .schedule import _finite_values, toposort_order  # noqa: PLC2701
 from .upit import solve_upit
 
@@ -74,6 +76,7 @@ class DestinationSchedule:
     #: plant in that period. An input in CPIT, a result here.
     effective_cutoff: np.ndarray
     notes: str = ""
+    local_search_receipt: LocalSearchReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -298,10 +301,11 @@ def exact_destination_local_search(
     rounds: int = 16,
     seed: int = 11,
     time_limit: float | None = None,
+    node_limit: int | None = None,
     mip_gap: float = 1e-4,
     grade: np.ndarray | None = None,
 ) -> DestinationSchedule:
-    """OPBSP-[D]: the exact restricted re-solve of Chicoisne et al. section 3.3, with destinations.
+    """OPBSP-[D]: the restricted MILP re-solve of Chicoisne et al. section 3.3, with destinations.
 
     The C-PIT[D] neighbourhoods (a block and a connected set of its predecessors, the same with
     successors, or the blocks of three consecutive periods), but the restricted model decides the
@@ -312,9 +316,9 @@ def exact_destination_local_search(
     move is a proven improvement of the restricted problem, so the objective is monotone and the
     result is never below ``start``.
 
-    ``time_limit=None`` stops each re-solve on the relative MIP gap alone, so a bake is reproducible
-    from (instance, seed) and not from the speed of the machine. Since 0.6.2 each re-solve starts from
-    the incumbent restricted to the neighbourhood, which is feasible for it by construction.
+    ``node_limit`` provides a deterministic work budget. The returned receipt separates feasible
+    incumbents from neighborhood optimality proofs. Since 0.6.2 each re-solve starts from the
+    incumbent restricted to the neighbourhood, which is feasible for it by construction.
     """
     from scipy.sparse import coo_matrix
 
@@ -333,10 +337,18 @@ def exact_destination_local_search(
     _check_feasible(inst, prec, period, dest)
     npv_now, _ = pcpsp_schedule_value(inst, period, dest)
     accepted = 0
+    skipped = 0
+    receipts: list[NeighborhoodSolveReceipt] = []
 
-    for _ in range(rounds):
+    if node_limit is not None and node_limit < 0:
+        raise ValueError("node_limit must be nonnegative or None")
+    if time_limit is not None and time_limit <= 0:
+        raise ValueError("time_limit must be positive or None")
+
+    for round_index in range(rounds):
         dset = _neighbourhood(rng, prec, sstart, slist, period, d_max)
         if dset.size < 4:
+            skipped += 1
             continue
         pos = {int(b): i for i, b in enumerate(dset)}
         k = int(dset.size)
@@ -405,6 +417,7 @@ def exact_destination_local_search(
                     continue
                 lb[yv(i, int(period[cblk]))] = 1.0
         if (lb > ub).any():
+            skipped += 1
             continue
 
         for rr in range(n_res):
@@ -426,11 +439,22 @@ def exact_destination_local_search(
                 continue
             x0[yv(i, pb) : yv(i, 0) + t_max] = 1.0
             x0[zv(i, int(dest[b]), pb)] = 1.0
+        solve_started = time.perf_counter()
         res = solve_binary_program(
             c, a_mat, np.array(lo), np.array(hi), lb=lb, ub=ub, mip_gap=mip_gap,
-            time_limit=time_limit, start=x0,
+            time_limit=time_limit, node_limit=node_limit, start=x0,
         )
+        solve_seconds = time.perf_counter() - solve_started
+        incumbent_npv = None if res.x is None else -float(res.objective)
+        upper_bound_npv = -float(res.dual_bound) if np.isfinite(res.dual_bound) else None
         if res.x is None or res.used_start:
+            receipts.append(NeighborhoodSolveReceipt(
+                round_index=round_index + 1, backend=res.backend, status=res.status,
+                seconds=solve_seconds, nodes=res.nodes,
+                mip_gap=float(res.gap) if np.isfinite(res.gap) else None,
+                incumbent_npv=incumbent_npv, upper_bound_npv=upper_bound_npv,
+                used_start=res.used_start, improved=False,
+            ))
             continue
 
         x = res.x
@@ -445,14 +469,35 @@ def exact_destination_local_search(
         try:
             _check_feasible(inst, prec, cand_p, cand_d)
         except AssertionError:
+            receipts.append(NeighborhoodSolveReceipt(
+                round_index=round_index + 1, backend=res.backend, status=res.status,
+                seconds=solve_seconds, nodes=res.nodes,
+                mip_gap=float(res.gap) if np.isfinite(res.gap) else None,
+                incumbent_npv=incumbent_npv, upper_bound_npv=upper_bound_npv,
+                used_start=res.used_start, improved=False,
+            ))
             continue
         npv_new, _ = pcpsp_schedule_value(inst, cand_p, cand_d)
-        if npv_new > npv_now + 1e-9 * max(1.0, abs(npv_now)):
+        improved = npv_new > npv_now + 1e-9 * max(1.0, abs(npv_now))
+        if improved:
             period, dest, npv_now = cand_p, cand_d, npv_new
             accepted += 1
+        receipts.append(NeighborhoodSolveReceipt(
+            round_index=round_index + 1, backend=res.backend, status=res.status,
+            seconds=solve_seconds, nodes=res.nodes,
+            mip_gap=float(res.gap) if np.isfinite(res.gap) else None,
+            incumbent_npv=incumbent_npv, upper_bound_npv=upper_bound_npv,
+            used_start=res.used_start, improved=improved,
+        ))
 
     if npv_now < start.npv - 1e-6 * max(1.0, abs(start.npv)):
         raise AssertionError(f"destination local search made it worse: {start.npv} -> {npv_now}")
+    receipt = LocalSearchReceipt(
+        neighborhoods=tuple(receipts), requested_rounds=rounds, skipped_rounds=skipped,
+        mip_gap_target=mip_gap, time_limit_seconds=time_limit, node_limit=node_limit,
+    )
+    optimal_count = sum(item.certified_optimal for item in receipts)
+    budget = f", node limit {node_limit}" if node_limit is not None else ""
     return DestinationSchedule(
         method=f"{start.method}+opbspD-ls",
         period_of_block=period,
@@ -461,10 +506,10 @@ def exact_destination_local_search(
         mined_blocks=int((period >= 0).sum()),
         exact=False,
         effective_cutoff=_effective_cutoff(inst, period, dest, grade),
-        notes=(
-            f"{accepted} of {rounds} exact OPBSP-[D] re-solves improved the incumbent; "
-            f"{milp_backend()}, each re-solve started from the incumbent"
-        ),
+        notes=(f"{accepted} of {len(receipts)} OPBSP-[D] neighborhood MILPs improved the incumbent; "
+               f"{optimal_count} were proven optimal{budget}; {milp_backend()}, each solve started "
+               "from the incumbent"),
+        local_search_receipt=receipt,
     )
 
 

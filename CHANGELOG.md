@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.5] - 2026-10-30
+
+### Added
+- C-PIT[D] and OPBSP-[D] local searches accept a deterministic `node_limit` and preserve one
+  `NeighborhoodSolveReceipt` per attempted solve: backend status, elapsed time, nodes, relative gap,
+  incumbent NPV, neighborhood NPV upper bound, and whether the incumbent improved.
+- Both local-search results expose a `LocalSearchReceipt` that reports skipped neighborhoods and only
+  claims full neighborhood optimality when every requested neighborhood was solved and certified.
+
+### Fixed
+- Bounded local-search incumbents remain feasible and monotone, while limit-hit results are no longer
+  described as proven neighborhood optima.
+- Updated local-search API docstrings to distinguish restricted MILP neighborhoods from global or
+  certified optimality claims.
+
 ## [0.6.4] - 2026-10-29
 
 ### Added
