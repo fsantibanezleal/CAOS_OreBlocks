@@ -12,7 +12,7 @@ spatial-coherence measurement that says whether a period's mined increment is on
 a scatter of fragments.
 """
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 from .bz import BzResult, Gpcp, solve_gpcp_lp
 from .coherence import PeriodCoherence, period_coherence, schedule_coherence
@@ -46,6 +46,7 @@ from .minelib_models import (
     write_pcpsp,
 )
 from .precedence import Precedence, build_precedence, slope_offsets
+from .receipts import LocalSearchReceipt, NeighborhoodSolveReceipt
 from .refine import (
     CutoffPolicy,
     SmoothingReport,
@@ -96,6 +97,8 @@ __all__ = [
     "ExtractionState",
     "Face",
     "LpRelaxation",
+    "LocalSearchReceipt",
+    "NeighborhoodSolveReceipt",
     "Pcpsp",
     "PeriodCoherence",
     "Precedence",

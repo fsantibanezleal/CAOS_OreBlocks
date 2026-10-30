@@ -68,6 +68,7 @@ import numpy as np
 
 from .minelib_models import Cpit
 from .precedence import Precedence
+from .receipts import LocalSearchReceipt
 from .upit import max_closure_within, solve_upit
 
 __all__ = [
@@ -424,6 +425,7 @@ class ScheduleResult:
     mined_blocks: int = 0
     heuristic: bool = True
     notes: str = ""
+    local_search_receipt: LocalSearchReceipt | None = None
 
     @property
     def gap_pct(self) -> float | None:
