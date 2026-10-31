@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.6] - 2026-10-31
 
 ### Fixed
 - Normalize SciPy MILP status code 0 to `Optimal`, matching highspy, so exact solve receipts
