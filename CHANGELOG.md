@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Normalize SciPy MILP status code 0 to `Optimal`, matching highspy, so exact solve receipts
+  certify true optima instead of discarding them as uncertified incumbents.
+
 ## [0.6.5] - 2026-10-30
 
 ### Added
