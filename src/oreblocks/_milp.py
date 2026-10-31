@@ -215,6 +215,9 @@ def _solve_scipy(c, a_csr, lo, hi, lb, ub, mip_gap, time_limit, node_limit=None)
     nodes = int(getattr(res, "mip_node_count", -1))
     gap = float(getattr(res, "mip_gap", float("nan")))
     bound = float(getattr(res, "mip_dual_bound", float("nan")))
+    # scipy.optimize.milp uses status=0 for a solver-certified optimum, while highspy's
+    # corresponding status string is "Optimal". Normalize both backends to the same contract.
+    status = "Optimal" if int(res.status) == 0 else str(res.message)
     if res.x is None:
-        return None, str(res.message), nodes, gap, bound
-    return np.asarray(res.x), str(res.message), nodes, gap, bound
+        return None, status, nodes, gap, bound
+    return np.asarray(res.x), status, nodes, gap, bound
