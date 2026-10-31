@@ -687,6 +687,35 @@ def test_the_milp_helper_never_returns_less_than_its_start() -> None:
     assert milp_backend().startswith("highspy"), "oreblocks[milp] must bring highspy"
 
 
+def test_scipy_optimal_status_is_normalized_for_exact_opbsp(monkeypatch) -> None:
+    """SciPy's successful MILP status must produce the same exactness receipt as HiGHS."""
+    import scipy.sparse as sp
+
+    from oreblocks import _milp
+
+    monkeypatch.setattr(_milp, "_highspy", lambda: None)
+    c = -np.array([5.0, 4.0, 3.0])
+    a = sp.csr_matrix(np.array([[2.0, 3.0, 1.0], [-1.0, 1.0, 0.0]]))
+    lo, hi = np.full(2, -np.inf), np.array([5.0, 0.0])
+    result = _milp.solve_binary_program(c, a, lo, hi)
+    assert result.status == "Optimal"
+    assert result.gap == pytest.approx(0.0)
+
+
+def test_scipy_optimal_status_certifies_exact_opbsp(monkeypatch) -> None:
+    """The public proof receipt must normalize SciPy's optimal result like HiGHS."""
+    from oreblocks import _milp
+
+    monkeypatch.setattr(_milp, "_highspy", lambda: None)
+    twin, inst = _pcpsp(dims=(4, 4, 3), periods=3)
+    receipt = ob.solve_opbsp_with_status(
+        inst, twin.precedence, max_variables=40_000, time_limit=60
+    )
+    assert receipt.status == "Optimal"
+    assert receipt.certified_optimal
+    assert receipt.schedule is not None and receipt.schedule.exact
+
+
 def test_the_warm_started_window_is_feasible_reproducible_and_says_what_ran() -> None:
     """The window start is built by a pass over the candidates; if it ever broke a row of the window
     MILP the helper would drop it and the notes would say so. Two runs must agree to the bit, because a
